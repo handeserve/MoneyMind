@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+PyYAML
+requests
+# Add other dependencies as they become known

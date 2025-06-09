@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN"> <!-- Set language to Chinese -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>个人支出分析器 - 仪表盘 (Personal Expense Analyzer - Dashboard)</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Add Chart.js CDN link (using v4.4.2 as a recent stable version) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Global Loader Overlay -->
+    <div id="global-loader-overlay" class="loader-overlay" style="display: none;">
+        <div class="loader-spinner"></div>
+        <p>加载中... (Loading...)</p>
+    </div>
+
+    <header>
+        <h1>个人支出分析器 (Personal Expense Analyzer)</h1>
+        <nav>
+            <a href="/">仪表盘 (Dashboard)</a> |
+            <a href="/expenses.html">账单管理 (Manage Expenses)</a> |
+            <a href="/settings.html">系统设置 (Settings)</a>
+        </nav>
+    </header>
+
+    <main id="app-content">
+        <h2>仪表盘概览 (Dashboard Overview)</h2>
+        
+        <section id="dashboard-controls">
+            <label for="date-range-select">选择周期 (Select Period):</label>
+            <select id="date-range-select">
+                <option value="last_7_days">最近7天 (Last 7 Days)</option>
+                <option value="last_30_days" selected>最近30天 (Last 30 Days)</option>
+                <option value="current_month">本月 (Current Month)</option>
+                <option value="last_month">上个月 (Last Month)</option>
+            </select>
+            <label for="granularity-select">趋势粒度 (Trend Granularity):</label>
+            <select id="granularity-select">
+                <option value="daily" selected>每日 (Daily)</option>
+                <option value="weekly">每周 (Weekly)</option>
+                <option value="monthly">每月 (Monthly)</option>
+            </select>
+        </section>
+        <hr>
+        
+        <div id="dashboard-messages" class="message" style="margin-bottom: 20px;"></div> <!-- For general messages -->
+
+        <section id="dashboard-summary" style="display: flex; justify-content: space-around; margin-bottom: 20px;">
+            <div class="summary-card">
+                <h4>总支出 (Total Expenses)</h4>
+                <p id="total-expenses-value">-</p>
+            </div>
+            <div class="summary-card">
+                <h4>日均支出 (Avg. Daily Expenses)</h4>
+                <p id="avg-daily-expenses-value">-</p>
+            </div>
+        </section>
+
+        <section id="dashboard-charts" style="display: flex; flex-wrap: wrap; justify-content: space-around;">
+            <div class="chart-container" style="width: 45%; min-height: 300px; margin-bottom: 20px;">
+                <h4>渠道支出占比 (Expenditure by Channel)</h4>
+                <canvas id="channelPieChart"></canvas>
+            </div>
+            <div class="chart-container" style="width: 45%; min-height: 300px; margin-bottom: 20px;">
+                <h4>分类支出占比 (Expenditure by Category)</h4>
+                <canvas id="categoryBarChart"></canvas>
+            </div>
+            <div class="chart-container" style="width: 90%; min-height: 350px; margin-bottom: 20px;">
+                <h4>支出趋势 (Expense Trend)</h4>
+                <canvas id="expenseTrendLineChart"></canvas>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2024 支出分析器 (Expense Analyzer)</p>
+    </footer>
+
+    <!-- UI Helper script (global loader, toasts) -->
+    <script src="/static/js/ui_helpers.js"></script>
+    <!-- Link to dashboard.js for dashboard specific logic -->
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

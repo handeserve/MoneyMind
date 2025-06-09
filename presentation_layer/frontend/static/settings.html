@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN"> <!-- Set language to Chinese -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统设置 - 个人支出分析器 (Settings - Personal Expense Analyzer)</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Add specific styles for settings page if needed in style.css or a new settings.css -->
+</head>
+<body>
+    <!-- Global Loader Overlay -->
+    <div id="global-loader-overlay" class="loader-overlay" style="display: none;">
+        <div class="loader-spinner"></div>
+        <p>加载中... (Loading...)</p>
+    </div>
+
+    <header>
+        <h1>个人支出分析器 (Personal Expense Analyzer)</h1>
+        <nav>
+            <a href="/">仪表盘 (Dashboard)</a> |
+            <a href="/expenses.html">账单管理 (Manage Expenses)</a> |
+            <a href="/settings.html">系统设置 (Settings)</a>
+        </nav>
+    </header>
+
+    <main id="app-content">
+        <h2>系统设置 (Settings)</h2>
+        <div id="settings-messages" class="messages-container" style="margin-bottom: 15px;"></div> <!-- For displaying success/error messages -->
+
+        <!-- Section 1: AI Model Configuration -->
+        <section id="ai-model-config-section" class="settings-section">
+            <h3>AI模型配置 (AI Model Configuration)</h3>
+            <div>
+                <label for="default-llm-service-select">默认LLM服务 (Default LLM Service):</label>
+                <select id="default-llm-service-select">
+                    <!-- Options will be populated by JavaScript -->
+                </select>
+            </div>
+            <div id="llm-services-configs-container">
+                <!-- Service specific configs will be populated here by JS -->
+                <!-- Example for one service:
+                <fieldset class="service-config-fieldset">
+                    <legend>DeepSeek 配置 (Configuration)</legend>
+                    <div>
+                        <label for="deepseek-api-key">API密钥 (API Key):</label>
+                        <input type="password" id="deepseek-api-key" placeholder="输入API密钥 (如果更新) (Enter API Key (if updating))">
+                    </div>
+                    <div>
+                        <label for="deepseek-model-name">模型名称 (Model Name):</label>
+                        <input type="text" id="deepseek-model-name" placeholder="例如 deepseek-chat (e.g., deepseek-chat)">
+                    </div>
+                    <div>
+                        <label for="deepseek-temperature">温度 (Temperature) (0.0-2.0):</label>
+                        <input type="number" id="deepseek-temperature" step="0.1" min="0" max="2">
+                    </div>
+                    <div>
+                        <label for="deepseek-max-tokens">最大令牌数 (Max Tokens):</label>
+                        <input type="number" id="deepseek-max-tokens" step="1" min="1">
+                    </div>
+                </fieldset>
+                -->
+            </div>
+            <button id="save-ai-model-config-button">保存AI模型配置 (Save AI Model Configuration)</button>
+        </section>
+        <hr>
+
+        <!-- Section 2: Category Management -->
+        <section id="category-management-section" class="settings-section">
+            <h3>分类管理 (Category Management)</h3>
+            <div id="categories-list-container">
+                <!-- Categories will be listed here by JavaScript -->
+                <!-- Example for one L1 category with L2s:
+                <div class="l1-category-item" data-l1-name="Food & Drinks">
+                    <h4>
+                        <span class="l1-name-display">餐饮 (Food & Drinks)</span>
+                        <input type="text" class="edit-l1-name-input" value="餐饮" style="display:none;">
+                        <button class="edit-l1-btn">编辑L1 (Edit L1)</button> 
+                        <button class="save-l1-btn" style="display:none;">保存L1 (Save L1)</button> 
+                        <button class="cancel-edit-l1-btn" style="display:none;">取消L1 (Cancel L1)</button> 
+                        <button class="delete-l1-btn">删除L1 (Delete L1)</button>
+                        <button class="add-l2-btn">添加L2 (Add L2)</button>
+                    </h4>
+                    <ul class="l2-category-list">
+                        <li data-l2-name="Groceries">
+                            <span class="l2-name-display">日常采购 (Groceries)</span>
+                            <input type="text" class="edit-l2-name-input" value="日常采购" style="display:none;">
+                            <button class="edit-l2-btn">编辑L2 (Edit L2)</button> 
+                            <button class="save-l2-btn" style="display:none;">保存L2 (Save L2)</button> 
+                            <button class="cancel-edit-l2-btn" style="display:none;">取消L2 (Cancel L2)</button> 
+                            <button class="delete-l2-btn">删除L2 (Delete L2)</button>
+                        </li>
+                    </ul>
+                    <div class="add-l2-form" style="display:none; margin-left: 20px;">
+                        <input type="text" class="new-l2-category-name" placeholder="新L2类别名称 (New L2 Name)">
+                        <button class="save-new-l2-btn">保存L2 (Save L2)</button>
+                        <button class="cancel-add-l2-btn">取消 (Cancel)</button>
+                    </div>
+                </div>
+                -->
+            </div>
+            <div style="margin-top: 15px;">
+                <h4>添加新的一级分类 (Add New L1 Category)</h4>
+                <input type="text" id="new-l1-category-name" placeholder="新L1类别名称 (New L1 Category Name)">
+                <button id="add-l1-category-button">添加L1类别 (Add L1 Category)</button>
+            </div>
+        </section>
+        <hr>
+
+        <!-- Section 3: Prompt Template Management -->
+        <section id="prompt-management-section" class="settings-section">
+            <h3>提示词模板管理 (Prompt Template Management)</h3>
+            <div id="prompt-templates-container">
+                <!-- Prompt templates will be listed here by JavaScript -->
+                <!-- Example for one prompt:
+                <div class="prompt-template-item" data-prompt-name="classification_prompt_template">
+                    <label for="prompt-classification_prompt_template">分类提示词模板 (Classification Prompt Template):</label>
+                    <textarea id="prompt-classification_prompt_template" rows="10" style="width: 90%;"></textarea>
+                </div>
+                -->
+            </div>
+            <button id="save-prompts-button">保存提示词模板 (Save Prompt Templates)</button>
+        </section>
+
+    </main>
+
+    <footer>
+        <p>&copy; 2024 支出分析器 (Expense Analyzer)</p>
+    </footer>
+
+    <script src="/static/js/ui_helpers.js"></script>
+    <script src="/static/js/settings.js"></script>
+</body>
+</html>

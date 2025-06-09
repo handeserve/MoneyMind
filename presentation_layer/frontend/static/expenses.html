@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN"> <!-- Set language to Chinese -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账单管理 - 个人支出分析器 (Manage Expenses - Personal Expense Analyzer)</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        /* Additional styles specific to expenses.html */
+        #import-section, #expenses-table-section, #batch-classify-section, #filter-controls-section { /* Added sections */
+            background-color: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #import-section div, #batch-classify-section div, #filter-controls-section div { /* Added sections */
+            margin-bottom: 10px;
+        }
+        #import-section label, #batch-classify-section label, #filter-controls-section label { /* Added sections */
+            display: inline-block;
+            width: auto; 
+            margin-right: 10px;
+        }
+        #import-section select, #import-section input[type="file"], 
+        #batch-classify-section input[type="number"], #filter-controls-section select { /* Added sections */
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #import-section button, #pagination-controls button, #batch-classify-section button { 
+            padding: 10px 15px;
+            background-color: #5cb85c; 
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        #import-section button:hover, #pagination-controls button:hover, #batch-classify-section button:hover {
+            background-color: #4cae4c;
+        }
+        #batch-classify-section button { 
+            background-color: #007bff; 
+        }
+        #batch-classify-section button:hover {
+             background-color: #0056b3;
+        }
+        .message {
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            min-height: 1.2em; 
+        }
+        .message.success, .alert.alert-success { 
+            background-color: #dff0d8;
+            color: #3c763d;
+            border: 1px solid #d6e9c6;
+        }
+        .message.error, .alert.alert-error {
+            background-color: #f2dede;
+            color: #a94442;
+            border: 1px solid #ebccd1;
+        }
+        .message.info, .alert.alert-info {
+            background-color: #d9edf7;
+            color: #31708f;
+            border: 1px solid #bce8f1;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        td input[type="text"] {
+            width: 90%; 
+            padding: 4px;
+            box-sizing: border-box;
+        }
+        td input[type="checkbox"] { /* Style for hide checkbox */
+            cursor: pointer;
+        }
+        td button {
+            padding: 5px 8px;
+            margin-right: 5px;
+            font-size: 0.8em;
+            cursor: pointer;
+        }
+        #pagination-controls {
+            text-align: center;
+            margin-top: 20px;
+        }
+        #pagination-controls span {
+            margin: 0 10px;
+        }
+        /* CSS for hidden rows */
+        .hidden-row {
+            opacity: 0.6; /* Make it slightly dimmer */
+            background-color: #f9f9f9; /* Light grey background for hidden rows */
+        }
+        .hidden-row td {
+            /* font-style: italic; */ /* Optional: makes text italic */
+            /* text-decoration: line-through; */ /* Optional: strikes through text */
+        }
+    </style>
+</head>
+<body>
+    <!-- Global Loader Overlay -->
+    <div id="global-loader-overlay" class="loader-overlay" style="display: none;">
+        <div class="loader-spinner"></div>
+        <p>加载中... (Loading...)</p>
+    </div>
+
+    <header>
+        <h1>个人支出分析器 (Personal Expense Analyzer)</h1>
+        <nav>
+            <a href="/">仪表盘 (Dashboard)</a> |
+            <a href="/expenses.html">账单管理 (Manage Expenses)</a> |
+            <a href="/settings.html">系统设置 (Settings)</a> 
+        </nav>
+    </header>
+
+    <main id="app-content">
+        <h2>账单管理 (Manage Expenses)</h2>
+
+        <section id="import-section">
+            <h3>导入支出 (Import Expenses)</h3>
+            <div>
+                <label for="channel-select">渠道 (Channel):</label>
+                <select id="channel-select">
+                    <option value="">--选择渠道 (Select Channel)--</option>
+                    <option value="WeChat Pay">微信支付 (WeChat Pay)</option>
+                    <option value="Alipay">支付宝 (Alipay)</option>
+                </select>
+            </div>
+            <div>
+                <label for="csv-file-input">选择CSV文件 (Select CSV File):</label>
+                <input type="file" id="csv-file-input" accept=".csv">
+            </div>
+            <button id="upload-csv-button">上传CSV (Upload CSV)</button>
+            <div id="import-message" class="message"></div>
+        </section>
+        <hr>
+
+        <section id="batch-classify-section">
+            <h4>批量AI分类 (Batch AI Classification)</h4>
+            <p>自动为尚未被AI分类或用户确认的支出进行分类。(Automatically classify expenses that have not yet been processed by AI or confirmed by the user.)</p>
+            <button id="batch-classify-button">运行批量分类 (Run Batch Classification)</button>
+            <div id="batch-classify-message" class="message" style="margin-top: 10px;"></div>
+        </section>
+        <hr>
+        
+        <section id="filter-controls-section">
+            <h4>筛选选项 (Filter Options)</h4>
+            <div>
+                <label for="visibility-filter-select">显示支出 (Show Expenses):</label>
+                <select id="visibility-filter-select">
+                    <option value="visible" selected>仅显示可见 (Visible Only)</option>
+                    <option value="all">全部 (All)</option>
+                    <option value="hidden">仅显示隐藏 (Hidden Only)</option>
+                </select>
+            </div>
+        </section>
+        <hr>
+
+        <section id="expenses-table-section">
+            <h3>支出记录 (Expense Records)</h3>
+            <div id="expenses-message" class="message"></div> 
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>时间 (Time)</th>
+                        <th>描述 (Description)</th>
+                        <th>金额 (Amount)</th>
+                        <th>渠道 (Channel)</th>
+                        <th>AI L1分类 (AI L1)</th>
+                        <th>AI L2分类 (AI L2)</th>
+                        <th>用户L1分类 (User L1)</th>
+                        <th>用户L2分类 (User L2)</th>
+                        <th>已确认 (Confirmed)</th>
+                        <th>隐藏状态 (Hidden Status)</th>
+                        <th>隐藏操作 (Hide Action)</th>
+                        <th>操作 (Actions)</th>
+                    </tr>
+                </thead>
+                <tbody id="expenses-tbody">
+                    <!-- Rows will be populated by JavaScript -->
+                </tbody>
+            </table>
+            <div id="pagination-controls">
+                <button id="prev-page" disabled>上一页 (Previous)</button>
+                <span id="current-page">页码 (Page): 1</span>
+                <button id="next-page" disabled>下一页 (Next)</button>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2024 支出分析器 (Expense Analyzer)</p>
+    </footer>
+    
+    <script src="/static/js/ui_helpers.js"></script>
+    <script src="/static/js/expenses.js"></script>
+</body>
+</html>

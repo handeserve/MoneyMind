@@ -1,0 +1,346 @@
+body {
+    font-family: sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f4;
+    color: #333;
+}
+
+header {
+    background: #333;
+    color: #fff;
+    padding: 1rem 0;
+    text-align: center;
+}
+
+header h1 {
+    margin: 0;
+}
+
+header nav a {
+    color: #fff;
+    text-decoration: none;
+    margin: 0 10px;
+}
+
+header nav a:hover {
+    text-decoration: underline;
+}
+
+main {
+    padding: 20px;
+    min-height: calc(100vh - 160px); /* Adjust based on header/footer height */
+}
+
+footer {
+    text-align: center;
+    padding: 1rem;
+    background: #333;
+    color: #fff;
+    position: relative; /* Changed from fixed for simplicity */
+    bottom: 0;
+    width: 100%;
+}
+
+/* Styles for expenses.html page specific elements */
+#import-section, #expenses-table-section, #batch-classify-section, #filter-controls-section { /* Added sections */
+    background-color: #fff;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+#import-section div, #batch-classify-section div, #filter-controls-section div { /* Added sections */
+    margin-bottom: 10px;
+}
+#import-section label, #batch-classify-section label, #filter-controls-section label { /* Added sections */
+    display: inline-block;
+    width: auto; 
+    margin-right: 10px;
+}
+#import-section select, #import-section input[type="file"], 
+#batch-classify-section input[type="number"], #filter-controls-section select { /* Added sections */
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+#import-section button, #pagination-controls button, #batch-classify-section button { 
+    padding: 10px 15px;
+    background-color: #5cb85c; 
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 10px;
+}
+#import-section button:hover, #pagination-controls button:hover, #batch-classify-section button:hover {
+    background-color: #4cae4c;
+}
+#batch-classify-section button { 
+    background-color: #007bff; 
+}
+#batch-classify-section button:hover {
+     background-color: #0056b3;
+}
+.message {
+    padding: 10px;
+    margin-top: 10px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    min-height: 1.2em; 
+}
+.message.success, .alert.alert-success { 
+    background-color: #dff0d8;
+    color: #3c763d;
+    border: 1px solid #d6e9c6;
+}
+.message.error, .alert.alert-error {
+    background-color: #f2dede;
+    color: #a94442;
+    border: 1px solid #ebccd1;
+}
+.message.info, .alert.alert-info {
+    background-color: #d9edf7;
+    color: #31708f;
+    border: 1px solid #bce8f1;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+th {
+    background-color: #f2f2f2;
+}
+td input[type="text"] {
+    width: 90%; 
+    padding: 4px;
+    box-sizing: border-box;
+}
+td input[type="checkbox"] { /* Style for hide checkbox */
+    cursor: pointer;
+}
+td button {
+    padding: 5px 8px;
+    margin-right: 5px;
+    font-size: 0.8em;
+    cursor: pointer;
+}
+#pagination-controls {
+    text-align: center;
+    margin-top: 20px;
+}
+#pagination-controls span {
+    margin: 0 10px;
+}
+
+
+/* Dashboard specific styles from the prompt */
+#dashboard-controls { 
+    margin-bottom: 20px; 
+    padding: 10px; 
+    background-color: #eee; 
+    border-radius: 5px; 
+}
+#dashboard-controls label { 
+    margin-right: 5px; 
+}
+#dashboard-controls select { 
+    margin-right: 15px; 
+    padding: 5px; 
+    border-radius: 4px; /* Added for consistency */
+    border: 1px solid #ccc; /* Added for consistency */
+}
+.summary-card { 
+    background-color: #fff; 
+    border: 1px solid #ddd; 
+    border-radius: 8px; /* Increased radius */
+    padding: 20px; /* Increased padding */
+    text-align: center; 
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1); /* Standardized shadow */
+    flex-basis: 200px; /* Added a basis for flex items */
+    margin: 10px; /* Added margin for spacing */
+}
+.summary-card h4 { 
+    margin-top: 0; 
+    color: #555; 
+    font-size: 1em; /* Adjusted size */
+}
+.summary-card p { 
+    font-size: 1.8em; 
+    font-weight: bold; 
+    color: #333; 
+    margin-bottom: 0; 
+}
+.chart-container { 
+    background-color: #fff; 
+    border: 1px solid #ddd; 
+    border-radius: 8px; /* Increased radius */
+    padding: 20px; /* Increased padding */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1); /* Standardized shadow */
+    /* width properties are set inline in HTML for flex layout */
+}
+.chart-container h4 { 
+    text-align: center; 
+    margin-top: 0; 
+    color: #555;
+}
+
+/* Ensure canvas is responsive within its container */
+canvas {
+    max-width: 100%;
+    height: auto !important; /* Override Chart.js inline style if maintainAspectRatio is false */
+}
+
+/* Global Loader Styles */
+.loader-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent background */
+    z-index: 9999; /* Ensure it's on top */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: white;
+}
+
+.loader-spinner {
+    border: 8px solid #f3f3f3; /* Light grey */
+    border-top: 8px solid #3498db; /* Blue */
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    animation: spin 1s linear infinite;
+    margin-bottom: 15px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Settings page specific styles (from previous task, ensure they are here) */
+.settings-section {
+    background-color: #fff;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.settings-section h3 {
+    margin-top: 0;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+    margin-bottom: 15px;
+}
+.settings-section div, .settings-section fieldset {
+    margin-bottom: 15px;
+}
+.settings-section label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+.settings-section input[type="text"],
+.settings-section input[type="password"],
+.settings-section input[type="number"],
+.settings-section select, /* Corrected: Removed typo settings_section */
+.settings-section textarea {
+    width: calc(100% - 22px); /* Account for padding and border */
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+.settings-section textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+.settings-section button {
+    padding: 10px 15px;
+    background-color: #007bff; /* Blue for settings actions */
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.settings-section button:hover {
+    background-color: #0056b3;
+}
+.service-config-fieldset {
+    border: 1px solid #ccc;
+    padding: 15px;
+    border-radius: 5px;
+}
+.service-config-fieldset legend {
+    font-weight: bold;
+    padding: 0 5px;
+}
+.l1-category-item h4, .l2-category-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px; /* Space between name and buttons */
+    margin-bottom: 5px;
+}
+.l1-category-item h4 input[type="text"], .l2-category-list li input[type="text"] {
+    flex-grow: 1; /* Input takes available space */
+    padding: 5px;
+}
+.l1-category-item .l2-category-list {
+    list-style-type: none;
+    padding-left: 20px;
+}
+.l1-category-item .add-l2-form {
+    margin-top: 5px;
+    margin-left: 20px;
+}
+.messages-container.alert { /* For settings page messages, if using this class */
+    padding: 10px;
+    margin-top: 0; /* Reset from general .message if it's at top of section */
+    margin-bottom: 15px; /* Space before next content */
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+/* Toast Notifications Styles */
+.toast-notification {
+    position: fixed;
+    bottom: 20px; 
+    right: 20px;
+    background-color: #333;
+    color: white;
+    padding: 15px 20px;
+    border-radius: 5px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.5s, transform 0.5s;
+    transform: translateY(20px); 
+}
+.toast-notification.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+.toast-notification.success { background-color: #28a745; }
+.toast-notification.error { background-color: #dc3545; }
+.toast-notification.info { background-color: #17a2b8; }
+
+/* CSS for hidden rows in expenses table */
+.hidden-row {
+    opacity: 0.5;
+    background-color: #f0f0f0; /* Light grey background */
+    /* text-decoration: line-through; */ /* Optional */
+}
+.hidden-row td {
+    /* font-style: italic; */ /* Optional */
+}

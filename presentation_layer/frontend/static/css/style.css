@@ -312,29 +312,6 @@ canvas {
     font-size: 0.9em;
 }
 
-/* Toast Notifications Styles */
-.toast-notification {
-    position: fixed;
-    bottom: 20px; 
-    right: 20px;
-    background-color: #333;
-    color: white;
-    padding: 15px 20px;
-    border-radius: 5px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-    z-index: 10000;
-    opacity: 0;
-    transition: opacity 0.5s, transform 0.5s;
-    transform: translateY(20px); 
-}
-.toast-notification.show {
-    opacity: 1;
-    transform: translateY(0);
-}
-.toast-notification.success { background-color: #28a745; }
-.toast-notification.error { background-color: #dc3545; }
-.toast-notification.info { background-color: #17a2b8; }
-
 /* CSS for hidden rows in expenses table */
 .hidden-row {
     opacity: 0.5;

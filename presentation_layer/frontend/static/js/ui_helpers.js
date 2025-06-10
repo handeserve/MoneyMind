@@ -39,13 +39,30 @@ function hideGlobalLoader() {
 }
 
 function showToast(message, type = 'info', duration = 3000) {
-    const toastContainer = document.body; 
+    let toastContainer = document.getElementById('toast-container');
+
+    if (!toastContainer) {
+        toastContainer = document.querySelector('.toast-container');
+    }
+
+    if (!toastContainer) {
+        toastContainer = document.createElement('div');
+        toastContainer.id = 'toast-container';
+        // The class 'toast-container' is also added for styling consistency,
+        // though the ID is primary for lookup.
+        toastContainer.className = 'toast-container';
+        document.body.appendChild(toastContainer);
+    }
+
     const toast = document.createElement('div');
-    toast.className = `toast-notification ${type}`; 
+    // Ensure the base class 'toast' is present, then the type-specific class.
+    toast.className = `toast toast-${type}`;
     toast.textContent = message;
     
     toastContainer.appendChild(toast);
 
+    // Delay adding 'show' class to allow CSS transition to take effect.
+    // Using a double requestAnimationFrame or a short timeout.
     requestAnimationFrame(() => {
         requestAnimationFrame(() => { 
             toast.classList.add('show');
@@ -55,11 +72,18 @@ function showToast(message, type = 'info', duration = 3000) {
     if (duration > 0) {
         setTimeout(() => {
             toast.classList.remove('show');
+            // Wait for the hide transition to complete before removing the element.
             toast.addEventListener('transitionend', () => {
+                // Check if the toast is still a child of the container before removing
                 if (toast.parentNode === toastContainer) {
                     toastContainer.removeChild(toast);
                 }
-            }, { once: true }); 
+                // If the container is empty after removing a toast, it could be removed.
+                // However, standard behavior is to keep the container.
+                // if (toastContainer.children.length === 0) {
+                //     toastContainer.remove(); // Optional: remove container if empty
+                // }
+            }, { once: true }); // Ensure the event listener is removed after firing.
         }, duration);
     }
 }

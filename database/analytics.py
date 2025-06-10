@@ -8,8 +8,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def _format_date_for_query(d: date) -> str:
-    """Formats a date object to 'YYYY-MM-DD' string for SQLite."""
-    return d.isoformat()
+    """Format date for SQLite query."""
+    return d.strftime("%Y-%m-%d")
 
 def _format_datetime_end_of_day(d: date) -> str:
     """Formats a date object to 'YYYY-MM-DD 23:59:59' string for SQLite inclusive end date."""
@@ -19,136 +19,129 @@ def get_summary_stats(db_conn: sqlite3.Connection, start_date: date, end_date: d
     """
     Calculates total expenses and average daily expenses within a date range.
     """
-    query = """
-    SELECT SUM(CAST(amount AS REAL)) 
-    FROM expenses 
-    WHERE transaction_time >= ? 
-      AND transaction_time <= ? 
-      AND is_hidden = 0;
-    """
-    start_date_str = _format_date_for_query(start_date)
-    end_date_str_eod = _format_datetime_end_of_day(end_date) # Inclusive end date
-
     try:
         cursor = db_conn.cursor()
-        cursor.execute(query, (start_date_str, end_date_str_eod))
-        result = cursor.fetchone()
-        
-        total_expenses = result[0] if result and result[0] is not None else 0.0
-        
-        num_days = (end_date - start_date).days + 1 # Inclusive
-        if num_days <= 0: # Should not happen if end_date >= start_date
-             average_daily_expenses = 0.0 if total_expenses == 0.0 else total_expenses # Avoid division by zero
-        else:
-            average_daily_expenses = total_expenses / num_days if num_days > 0 else 0.0
-            
-        return {
-            "total_expenses": round(total_expenses, 2),
-            "average_daily_expenses": round(average_daily_expenses, 2),
-            "start_date": start_date,
-            "end_date": end_date
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_transactions,
+                SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as total_expense,
+                AVG(CASE WHEN amount < 0 THEN amount ELSE 0 END) as avg_expense,
+                MAX(CASE WHEN amount < 0 THEN amount ELSE 0 END) as max_expense,
+                MIN(CASE WHEN amount < 0 THEN amount ELSE 0 END) as min_expense
+            FROM expenses
+            WHERE transaction_time BETWEEN ? AND ?
+        """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        stats = cursor.fetchone()
+        return dict(stats) if stats else {
+            "total_transactions": 0,
+            "total_expense": 0,
+            "avg_expense": 0,
+            "max_expense": 0,
+            "min_expense": 0
         }
-    except sqlite3.Error as e:
-        logger.error(f"Error in get_summary_stats: {e}", exc_info=True)
-        # Return a default structure in case of error, or re-raise
-        return {"total_expenses": 0.0, "average_daily_expenses": 0.0, "start_date": start_date, "end_date": end_date}
-
+    except Exception as e:
+        logger.error(f"Error in get_summary_stats: {e}")
+        return {
+            "total_transactions": 0,
+            "total_expense": 0,
+            "avg_expense": 0,
+            "max_expense": 0,
+            "min_expense": 0
+        }
 
 def get_spending_by_channel(db_conn: sqlite3.Connection, start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """
     Calculates total spending grouped by payment channel.
     """
-    query = """
-    SELECT channel, SUM(CAST(amount AS REAL)) as total_amount 
-    FROM expenses 
-    WHERE transaction_time >= ? 
-      AND transaction_time <= ? 
-      AND is_hidden = 0 
-      AND channel IS NOT NULL AND channel != ''
-    GROUP BY channel 
-    ORDER BY total_amount DESC;
-    """
-    start_date_str = _format_date_for_query(start_date)
-    end_date_str_eod = _format_datetime_end_of_day(end_date)
-
-    results_list = []
     try:
         cursor = db_conn.cursor()
-        cursor.execute(query, (start_date_str, end_date_str_eod))
-        for row in cursor.fetchall():
-            results_list.append({"channel": row[0], "total_amount": round(row[1] or 0.0, 2)})
-    except sqlite3.Error as e:
-        logger.error(f"Error in get_spending_by_channel: {e}", exc_info=True)
-    return results_list
+        cursor.execute("""
+            SELECT 
+                channel,
+                COUNT(*) as transaction_count,
+                SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as total_expense
+            FROM expenses
+            WHERE transaction_time BETWEEN ? AND ?
+            GROUP BY channel
+            ORDER BY total_expense ASC
+        """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error in get_spending_by_channel: {e}")
+        return []
 
 def get_expense_trend(db_conn: sqlite3.Connection, start_date: date, end_date: date, granularity: str = "daily") -> List[Dict[str, Any]]:
     """
     Calculates expense trends over time with daily, weekly, or monthly granularity.
     """
-    start_date_str = _format_date_for_query(start_date)
-    end_date_str_eod = _format_datetime_end_of_day(end_date)
-
-    if granularity == "daily":
-        date_format_sql = "DATE(transaction_time)"
-    elif granularity == "weekly":
-        # SQLite's %W gives week of year (00-53), %Y gives year.
-        # For ISO week, use '%Y-%W' but be mindful of SQLite's week start (Sunday for %W by default unless compiled differently).
-        # For consistency, if start_of_week matters, more complex logic might be needed or use a calendar table.
-        # Using '%Y-%W' is a common simple approach.
-        date_format_sql = "strftime('%Y-%W', transaction_time)"
-    elif granularity == "monthly":
-        date_format_sql = "strftime('%Y-%m', transaction_time)"
-    else:
-        logger.warning(f"Invalid granularity '{granularity}' in get_expense_trend. Defaulting to daily.")
-        date_format_sql = "DATE(transaction_time)" # Default or raise error
-
-    query = f"""
-    SELECT {date_format_sql} as date_period, SUM(CAST(amount AS REAL)) as total_amount 
-    FROM expenses 
-    WHERE transaction_time >= ? 
-      AND transaction_time <= ? 
-      AND is_hidden = 0 
-    GROUP BY date_period 
-    ORDER BY date_period ASC;
-    """
-    
-    results_list = []
     try:
         cursor = db_conn.cursor()
-        cursor.execute(query, (start_date_str, end_date_str_eod))
-        for row in cursor.fetchall():
-            results_list.append({"date_period": row[0], "total_amount": round(row[1] or 0.0, 2)})
-    except sqlite3.Error as e:
-        logger.error(f"Error in get_expense_trend (granularity: {granularity}): {e}", exc_info=True)
-    return results_list
+        if granularity == "daily":
+            cursor.execute("""
+                SELECT 
+                    DATE(transaction_time) as date,
+                    SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as daily_expense
+                FROM expenses
+                WHERE transaction_time BETWEEN ? AND ?
+                GROUP BY date
+                ORDER BY date
+            """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        elif granularity == "weekly":
+            cursor.execute("""
+                SELECT 
+                    strftime('%Y-%W', transaction_time) as week,
+                    SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as weekly_expense
+                FROM expenses
+                WHERE transaction_time BETWEEN ? AND ?
+                GROUP BY week
+                ORDER BY week
+            """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        elif granularity == "monthly":
+            cursor.execute("""
+                SELECT 
+                    strftime('%Y-%m', transaction_time) as month,
+                    SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as monthly_expense
+                FROM expenses
+                WHERE transaction_time BETWEEN ? AND ?
+                GROUP BY month
+                ORDER BY month
+            """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        else:
+            logger.warning(f"Invalid granularity '{granularity}' in get_expense_trend. Defaulting to daily.")
+            cursor.execute("""
+                SELECT 
+                    DATE(transaction_time) as date,
+                    SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as daily_expense
+                FROM expenses
+                WHERE transaction_time BETWEEN ? AND ?
+                GROUP BY date
+                ORDER BY date
+            """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error in get_expense_trend: {e}")
+        return []
 
 def get_spending_by_l1_category(db_conn: sqlite3.Connection, start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """
     Calculates total spending grouped by L1 category for user-confirmed expenses.
     """
-    query = """
-    SELECT category_l1, SUM(CAST(amount AS REAL)) as total_amount 
-    FROM expenses 
-    WHERE transaction_time >= ? 
-      AND transaction_time <= ? 
-      AND is_confirmed_by_user = 1 
-      AND is_hidden = 0 
-      AND category_l1 IS NOT NULL AND category_l1 != '' 
-    GROUP BY category_l1 
-    ORDER BY total_amount DESC;
-    """
-    start_date_str = _format_date_for_query(start_date)
-    end_date_str_eod = _format_datetime_end_of_day(end_date)
-
-    results_list = []
     try:
         cursor = db_conn.cursor()
-        cursor.execute(query, (start_date_str, end_date_str_eod))
-        for row in cursor.fetchall():
-            results_list.append({"category_l1": row[0], "total_amount": round(row[1] or 0.0, 2)})
-    except sqlite3.Error as e:
-        logger.error(f"Error in get_spending_by_l1_category: {e}", exc_info=True)
-    return results_list
+        cursor.execute("""
+            SELECT 
+                category_l1,
+                COUNT(*) as transaction_count,
+                SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as total_expense
+            FROM expenses
+            WHERE transaction_time BETWEEN ? AND ?
+            GROUP BY category_l1
+            ORDER BY total_expense ASC
+        """, (_format_date_for_query(start_date), _format_date_for_query(end_date)))
+        return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error in get_spending_by_l1_category: {e}")
+        return []
 
 # --- Main block for testing (Optional but Recommended) ---
 if __name__ == '__main__':

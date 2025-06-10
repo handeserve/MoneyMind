@@ -5,9 +5,9 @@ from typing import Optional, Dict, Any, List # Added List and Dict
 import time # For testing delays and unique IDs
 
 # Database related imports
-from ..database.database import get_expense_by_id, update_expense, get_db_connection, create_expense, delete_expense, DATABASE_PATH as DEFAULT_DB_PATH, get_expenses # Added get_expenses
-from .config_manager import get_config, get_api_key as cm_get_api_key # cm_ for config_manager's get_api_key
-from .llm_interface import get_llm_classification
+from database.database import get_expense_by_id, update_expense, get_db_connection, create_expense, delete_expense, DATABASE_PATH as DEFAULT_DB_PATH, get_expenses
+from ai_layer.config_manager import get_config, get_api_key as cm_get_api_key
+from ai_layer.llm_interface import get_llm_classification
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -221,7 +221,7 @@ if __name__ == '__main__':
             main_logger.error("Failed to establish database connection. Aborting test.")
             exit(1)
 
-        from ..database.database import create_tables
+        from database.database import create_tables
         create_tables(db_conn_main)
         main_logger.info("Database tables ensured.")
 

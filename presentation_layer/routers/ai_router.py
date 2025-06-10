@@ -6,10 +6,12 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 # DB Dependency
-from ..main import get_db 
+from presentation_layer.dependencies import get_db 
 
 # AI Layer function
-from ...ai_layer.expense_classifier import classify_batch_expenses 
+from ai_layer.expense_classifier import classify_batch_expenses
+from ai_layer.llm_interface import get_llm_classification
+from ai_layer.config_manager import get_prompt_template, get_preset_categories
 import logging # For logging
 
 logger = logging.getLogger(__name__)

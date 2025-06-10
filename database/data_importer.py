@@ -4,11 +4,24 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import os
 import re # Added for _generate_cleaned_description
+from dataclasses import dataclass
+from typing import List, Optional
 
 from .csv_parser import parse_wechat_csv, parse_alipay_csv
 
 # Configure basic logging
 logger = logging.getLogger(__name__) # Use module-level logger for consistency
+
+@dataclass
+class ImportSummary:
+    """导入操作的摘要信息"""
+    total_records: int
+    imported_records: int
+    skipped_records: int
+    failed_records: int
+    channel: str
+    file_name: str
+    import_time: str
 
 def _generate_cleaned_description(source_raw_description: str, channel: str) -> str:
     """
@@ -159,108 +172,105 @@ def _insert_expense(cursor, parsed_record, channel, current_time_iso):
         return False
 
 
-def _record_import_source(cursor, file_name, channel, import_timestamp_iso,
-                          records_imported_count, total_records_in_file, parse_errors_count, db_insert_errors_count):
+def _record_import_source(db_connection, record, channel):
     """
-    Records the outcome of an import attempt in the import_sources table.
-    (Content from previous implementation)
+    记录导入来源信息到 import_records 表。
     """
-    status = "Failed" 
-    if parse_errors_count > 0: status = "Failed (Parsing)"; records_imported_count = 0
-    elif total_records_in_file is None : status = "Failed (Internal Error)"; records_imported_count = 0
-    elif total_records_in_file == 0: status = "Success (No Data)" if db_insert_errors_count == 0 else "Failed (DB Error on Empty)"
-    elif db_insert_errors_count > 0: status = "Partial (DB Errors)" if records_imported_count > 0 else "Failed (DB Errors)"
-    elif records_imported_count == total_records_in_file: status = "Success"
-    elif records_imported_count < total_records_in_file: status = "Partial (Skipped/Duplicates)"
-    if status == "Failed" and records_imported_count == 0 and total_records_in_file > 0 and parse_errors_count == 0 and db_insert_errors_count == 0:
-        status = "Success (All Duplicates/Skipped)"
-    sql = "INSERT INTO import_sources (file_name, source_channel, import_timestamp, records_imported, status) VALUES (?, ?, ?, ?, ?)"
     try:
-        actual_records_to_consider = total_records_in_file if total_records_in_file is not None else 0
-        logger.info(f"Recording import for {file_name}: Status '{status}', Imported {records_imported_count}/{actual_records_to_consider}.")
-        cursor.execute(sql, (file_name, channel, import_timestamp_iso, records_imported_count, status))
-    except sqlite3.Error as e:
-        logger.error(f"Critical error recording import source for {file_name}: {e}")
-
-
-def import_data(db_connection, file_path, channel):
-    """
-    Imports expense data from a CSV file into the database.
-    (Content from previous implementation, _insert_expense now handles description cleaning)
-    """
-    summary = {
-        'file_path': file_path, 'channel': channel, 'total_records_in_file': 0,
-        'successfully_imported': 0, 'skipped_duplicates': 0, 'parse_errors': 0,
-        'insert_errors': 0, 'status_message': ''
-    }
-    current_time_iso = datetime.now(timezone.utc).isoformat()
-    parsed_records = []
-    file_base_name = os.path.basename(file_path)
-
-    try:
-        if channel == "WeChat Pay": parsed_records = parse_wechat_csv(file_path)
-        elif channel == "Alipay": parsed_records = parse_alipay_csv(file_path)
-        else:
-            summary.update({'status_message': f"Unsupported channel: {channel}", 'parse_errors': 1})
-            logger.error(f"Unsupported channel: {channel} for file {file_path}")
-            _record_import_source(db_connection.cursor(), file_base_name, channel, current_time_iso, 0, 0, 1, 0)
-            db_connection.commit(); return summary
-        summary['total_records_in_file'] = len(parsed_records)
-    except FileNotFoundError:
-        summary.update({'status_message': "File not found.", 'parse_errors': 1})
-        logger.error(f"File not found: {file_path}")
-        _record_import_source(db_connection.cursor(), file_base_name, channel, current_time_iso, 0, None, 1, 0)
-        db_connection.commit(); return summary
-    except Exception as e: 
-        summary.update({'status_message': f"Parsing failed: {e}", 'parse_errors': 1})
-        logger.error(f"Error parsing file {file_path} for channel {channel}: {e}", exc_info=True)
-        _record_import_source(db_connection.cursor(), file_base_name, channel, current_time_iso, 0, None, 1, 0)
-        db_connection.commit(); return summary
-
-    if not parsed_records:
-        summary['status_message'] = "No processable records found or file was empty/fully filtered by parser."
-        logger.info(f"No processable records returned by parser for {file_path} (Channel: {channel}).")
-        _record_import_source(db_connection.cursor(), file_base_name, channel, current_time_iso, 0, 0, 0, 0)
-        db_connection.commit(); return summary
-    
-    cursor = db_connection.cursor()
-    try:
-        for record in parsed_records:
-            if not isinstance(record, dict) or not all(k in record for k in ['transaction_time', 'amount', 'external_transaction_id']):
-                logger.warning(f"Skipping invalid/incomplete record: {record.get('external_transaction_id', 'ID UNKNOWN')}")
-                summary['insert_errors'] +=1; continue
-            if record.get('amount') is None or not isinstance(record.get('amount'), Decimal):
-                logger.warning(f"Skipping record due to invalid amount: {record.get('external_transaction_id', 'ID UNKNOWN')}")
-                summary['insert_errors'] +=1; continue
-            if _check_duplicate(cursor, record, channel):
-                summary['skipped_duplicates'] += 1
-            else:
-                # _insert_expense now internally calls _generate_cleaned_description
-                insert_result = _insert_expense(cursor, record, channel, current_time_iso)
-                if insert_result is True: summary['successfully_imported'] += 1
-                elif insert_result == "duplicate_external_id": summary['skipped_duplicates'] += 1 
-                else: summary['insert_errors'] += 1
-        
-        _record_import_source(cursor, file_base_name, channel, current_time_iso,
-                              summary['successfully_imported'], summary['total_records_in_file'],
-                              summary['parse_errors'], summary['insert_errors'])
+        cursor = db_connection.cursor()
+        cursor.execute("""
+            INSERT INTO import_records (
+                file_name, channel, import_time,
+                total_records, imported_records,
+                skipped_records, failed_records
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            record.get('file_name', ''),
+            channel,
+            record.get('import_time', datetime.now(timezone.utc).isoformat()),
+            record.get('total_records', 0),
+            record.get('imported_records', 0),
+            record.get('skipped_records', 0),
+            record.get('failed_records', 0)
+        ))
         db_connection.commit()
-        summary['status_message'] = "Import process completed."
-    except sqlite3.Error as e:
-        db_connection.rollback()
-        summary.update({'status_message': f"Database error during import batch: {e}", 
-                        'insert_errors': summary['total_records_in_file'] - summary['successfully_imported'] - summary['skipped_duplicates']})
-        logger.error(f"Database error during import for {file_path}: {e}. Rolled back.", exc_info=True)
-        try: _record_import_source(cursor, file_base_name, channel, current_time_iso, summary['successfully_imported'], summary['total_records_in_file'], summary['parse_errors'], summary['insert_errors']); db_connection.commit()
-        except Exception as e_is: logger.error(f"Failed to record import source after DB error for {file_path}: {e_is}", exc_info=True)
-    except Exception as e: 
-        db_connection.rollback()
-        summary.update({'status_message': f"Unexpected error during record processing: {e}", 
-                        'insert_errors': summary['total_records_in_file'] - summary['successfully_imported'] - summary['skipped_duplicates']})
-        logger.error(f"Unexpected error during import for {file_path}: {e}. Rolled back.", exc_info=True)
-        try: _record_import_source(cursor, file_base_name, channel, current_time_iso, summary['successfully_imported'], summary['total_records_in_file'], summary['parse_errors'], summary['insert_errors']); db_connection.commit()
-        except Exception as e_is: logger.error(f"Failed to record import source after unexpected error for {file_path}: {e_is}", exc_info=True)
-    return summary
+    except Exception as e:
+        logger.error(f"Error recording import source: {e}")
+
+
+def import_data(db_connection, file_path: str, channel: str) -> ImportSummary:
+    """
+    Imports data from a CSV file into the database.
+    
+    Args:
+        db_connection: Database connection
+        file_path (str): Path to the CSV file
+        channel (str): Channel name (e.g., 'Alipay', 'WeChat')
+        
+    Returns:
+        ImportSummary: Summary of the import operation
+    """
+    current_time = datetime.now(timezone.utc)
+    current_time_iso = current_time.isoformat()
+    
+    # 初始化导入统计
+    summary = ImportSummary(
+        total_records=0,
+        imported_records=0,
+        skipped_records=0,
+        failed_records=0,
+        channel=channel,
+        file_name=os.path.basename(file_path),
+        import_time=current_time_iso
+    )
+    
+    try:
+        # 根据渠道选择解析函数
+        if channel == 'Alipay':
+            records = parse_alipay_csv(file_path)
+        elif channel == 'WeChat':
+            records = parse_wechat_csv(file_path)
+        else:
+            logger.error(f"Unsupported channel: {channel}")
+            return summary
+        
+        if not records:
+            logger.info(f"No processable records returned by parser for {file_path} (Channel: {channel}).")
+            return summary
+        
+        summary.total_records = len(records)
+        
+        # 开始导入数据
+        with db_connection as conn:
+            cursor = conn.cursor()
+            for record in records:
+                try:
+                    # 检查重复
+                    if _check_duplicate(cursor, record, channel):
+                        summary.skipped_records += 1
+                        continue
+                    
+                    # 插入记录
+                    result = _insert_expense(cursor, record, channel, current_time_iso)
+                    if result is True:
+                        summary.imported_records += 1
+                        # 记录导入来源
+                        _record_import_source(conn, record, channel)
+                    elif result == "duplicate_external_id":
+                        summary.skipped_records += 1
+                    else:
+                        summary.failed_records += 1
+                except Exception as e:
+                    logger.error(f"Error processing record: {e}")
+                    summary.failed_records += 1
+            
+            conn.commit()
+        
+        return summary
+    
+    except Exception as e:
+        logger.error(f"Error during CSV import: {e}")
+        return summary
 
 
 if __name__ == '__main__':
@@ -323,21 +333,21 @@ if __name__ == '__main__':
     test_ids_to_check = []
 
     logger.info("\n--- Data Importer Test: Testing WeChat Import with Cleaning ---")
-    wechat_result = import_data(conn, wechat_test_file_main, "WeChat Pay")
+    wechat_result = import_data(conn, wechat_test_file_main, "WeChat")
     logger.info(f"WeChat Import Result: {wechat_result}")
-    if wechat_result['successfully_imported'] > 0:
+    if wechat_result['imported_records'] > 0:
         # Fetch last N imported records for verification (assuming IDs are sequential)
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM expenses WHERE channel='WeChat Pay' ORDER BY id DESC LIMIT ?", (wechat_result['successfully_imported'],))
+        cursor.execute("SELECT id FROM expenses WHERE channel='WeChat' ORDER BY id DESC LIMIT ?", (wechat_result['imported_records'],))
         test_ids_to_check.extend([row[0] for row in cursor.fetchall()])
 
 
     logger.info("\n--- Data Importer Test: Testing Alipay Import with Cleaning ---")
     alipay_result = import_data(conn, alipay_test_file_main, "Alipay")
     logger.info(f"Alipay Import Result: {alipay_result}")
-    if alipay_result['successfully_imported'] > 0:
+    if alipay_result['imported_records'] > 0:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM expenses WHERE channel='Alipay' ORDER BY id DESC LIMIT ?", (alipay_result['successfully_imported'],))
+        cursor.execute("SELECT id FROM expenses WHERE channel='Alipay' ORDER BY id DESC LIMIT ?", (alipay_result['imported_records'],))
         test_ids_to_check.extend([row[0] for row in cursor.fetchall()])
     
     logger.info("\n--- Data Importer Test: Verifying Cleaned Descriptions ---")

@@ -1,16 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlite3 import Connection
 from typing import Optional, List, Dict, Any # Maintained for general use, though specific models are used
-from datetime import date # For date type hinting
+from datetime import date, datetime # For date type hinting
 
 # Pydantic models for response structures
 from pydantic import BaseModel, validator
 
 # Assuming get_db is in main.py, which is one level up from routers directory
-from ..main import get_db 
+from presentation_layer.dependencies import get_db 
 
 # Import analytics functions from database layer
-from ...database import analytics as db_analytics 
+from database import analytics as analytics_ops
+from database.analytics import get_summary_stats, get_spending_by_l1_category, get_spending_by_channel, get_expense_trend
+from database.db import get_db_connection
 import logging # For logging within the router
 
 logger = logging.getLogger(__name__)
@@ -44,85 +46,70 @@ def validate_date_range(start_date: date, end_date: date):
 
 # --- Dashboard Endpoints ---
 
-@router.get("/summary_stats", response_model=SummaryStats)
-async def get_summary_stats_endpoint(
-    start_date: date = Query(..., description="Start date for the statistics (YYYY-MM-DD)."), 
-    end_date: date = Query(..., description="End date for the statistics (YYYY-MM-DD)."), 
-    db: Connection = Depends(get_db)
+@router.get("/summary")
+async def get_summary_endpoint(
+    start_date: date = Query(..., description="Start date for analysis"),
+    end_date: date = Query(..., description="End date for analysis"),
+    db_conn = Depends(get_db_connection)
 ):
     """
-    Provides summary statistics of expenses within a given date range.
+    Get summary statistics for the specified date range.
     """
-    validate_date_range(start_date, end_date)
     try:
-        stats_data = db_analytics.get_summary_stats(db, start_date, end_date)
-        # The db_analytics.get_summary_stats already returns a dict that matches SummaryStats model
-        # including handling of no data by returning 0.0 for amounts.
-        return SummaryStats(**stats_data)
+        stats = get_summary_stats(db_conn, start_date, end_date)
+        return stats
     except Exception as e:
-        logger.error(f"Error in /summary_stats endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error while fetching summary statistics.")
+        logger.error(f"Error in /summary endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.get("/channel_distribution", response_model=List[ChannelDistributionItem])
-async def get_channel_distribution_endpoint(
-    start_date: date = Query(..., description="Start date for the distribution (YYYY-MM-DD)."), 
-    end_date: date = Query(..., description="End date for the distribution (YYYY-MM-DD)."), 
-    db: Connection = Depends(get_db)
-):
-    """
-    Shows the distribution of expenses across different payment channels.
-    """
-    validate_date_range(start_date, end_date)
-    try:
-        channel_data = db_analytics.get_spending_by_channel(db, start_date, end_date)
-        # db_analytics.get_spending_by_channel returns a list of dicts matching ChannelDistributionItem
-        return [ChannelDistributionItem(**item) for item in channel_data]
-    except Exception as e:
-        logger.error(f"Error in /channel_distribution endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error while fetching channel distribution.")
-
-
-@router.get("/expense_trend", response_model=List[ExpenseTrendItem])
-async def get_expense_trend_endpoint(
-    start_date: date = Query(..., description="Start date for the trend analysis (YYYY-MM-DD)."), 
-    end_date: date = Query(..., description="End date for the trend analysis (YYYY-MM-DD)."), 
-    granularity: str = Query("daily", description="Granularity of the trend: 'daily', 'weekly', or 'monthly'."),
-    db: Connection = Depends(get_db)
-):
-    """
-    Provides data for expense trends over time, with selectable granularity.
-    """
-    validate_date_range(start_date, end_date)
-    if granularity not in ["daily", "weekly", "monthly"]:
-        raise HTTPException(status_code=400, detail="Invalid granularity. Choose from 'daily', 'weekly', 'monthly'.")
-    
-    try:
-        trend_data = db_analytics.get_expense_trend(db, start_date, end_date, granularity)
-        # db_analytics.get_expense_trend returns a list of dicts matching ExpenseTrendItem
-        return [ExpenseTrendItem(**item) for item in trend_data]
-    except Exception as e:
-        logger.error(f"Error in /expense_trend endpoint (granularity: {granularity}): {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error while fetching expense trend.")
-
-
-@router.get("/category_spending", response_model=List[CategorySpendingItem])
+@router.get("/category_spending")
 async def get_category_spending_endpoint(
-    start_date: date = Query(..., description="Start date for category spending analysis (YYYY-MM-DD)."), 
-    end_date: date = Query(..., description="End date for category spending analysis (YYYY-MM-DD)."), 
-    db: Connection = Depends(get_db)
+    start_date: date = Query(..., description="Start date for analysis"),
+    end_date: date = Query(..., description="End date for analysis"),
+    db_conn = Depends(get_db_connection)
 ):
     """
-    Shows total spending per L1 category for user-confirmed expenses within the specified date range.
+    Get spending breakdown by L1 category for the specified date range.
     """
-    validate_date_range(start_date, end_date)
     try:
-        category_data = db_analytics.get_spending_by_l1_category(db, start_date, end_date)
-        # db_analytics.get_spending_by_l1_category returns a list of dicts matching CategorySpendingItem
-        return [CategorySpendingItem(**item) for item in category_data]
+        category_data = get_spending_by_l1_category(db_conn, start_date, end_date)
+        return category_data
     except Exception as e:
-        logger.error(f"Error in /category_spending endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error while fetching category spending.")
+        logger.error(f"Error in /category_spending endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/channel_spending")
+async def get_channel_spending_endpoint(
+    start_date: date = Query(..., description="Start date for analysis"),
+    end_date: date = Query(..., description="End date for analysis"),
+    db_conn = Depends(get_db_connection)
+):
+    """
+    Get spending breakdown by payment channel for the specified date range.
+    """
+    try:
+        channel_data = get_spending_by_channel(db_conn, start_date, end_date)
+        return channel_data
+    except Exception as e:
+        logger.error(f"Error in /channel_spending endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/expense_trend")
+async def get_expense_trend_endpoint(
+    start_date: date = Query(..., description="Start date for analysis"),
+    end_date: date = Query(..., description="End date for analysis"),
+    granularity: str = Query("daily", description="Time granularity (daily/weekly/monthly)"),
+    db_conn = Depends(get_db_connection)
+):
+    """
+    Get expense trend over time with specified granularity.
+    """
+    try:
+        trend_data = get_expense_trend(db_conn, start_date, end_date, granularity)
+        return trend_data
+    except Exception as e:
+        logger.error(f"Error in /expense_trend endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     # This block is for context/documentation; direct execution isn't typical for routers.

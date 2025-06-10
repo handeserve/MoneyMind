@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 
 # Assuming get_db is in main.py, which is one level up from routers directory
 # It's included for consistency, though category management might not directly use the DB here.
-from ..main import get_db 
+from presentation_layer.dependencies import get_db 
 
 # Import config_manager from ai_layer. We'll use its functions later.
-from ...ai_layer import config_manager as cm 
+from ai_layer import config_manager as cm 
 import logging # For logging
 
 logger = logging.getLogger(__name__)

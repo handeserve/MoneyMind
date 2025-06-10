@@ -12,10 +12,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Adjust path for get_sqlite_connection
-from ..database.database import get_db_connection as get_sqlite_connection
+from database.database import get_db_connection as get_sqlite_connection
 
 # Import routers
-from .routers import expenses_router, import_router, dashboard_router, settings_router, ai_router # Added ai_router
+from presentation_layer.routers import expenses_router, import_router, dashboard_router, settings_router, ai_router # Added ai_router
+from presentation_layer.dependencies import get_db
 
 app = FastAPI(
     title="Personal Smart Expense Analyzer API",
@@ -34,7 +35,7 @@ DATABASE_FILE_PATH = os.path.join(_project_root_from_main, 'personal_expenses.db
 def get_db():
     db = get_sqlite_connection()
     if db is None:
-        from ..database.database import DATABASE_PATH as ACTUAL_DB_PATH_USED
+        from database.database import DATABASE_PATH as ACTUAL_DB_PATH_USED
         logger.error(f"Failed to establish database connection via get_sqlite_connection. Expected path by database.py: {ACTUAL_DB_PATH_USED}")
         raise HTTPException(status_code=503, detail=f"Service Unavailable: Could not connect to the database. Path: {ACTUAL_DB_PATH_USED}")
     try:
@@ -89,7 +90,7 @@ async def read_html_page(page_name: str):
 
 if __name__ == "__main__":
     logger.info(f"Starting Uvicorn development server. Current CWD for main.py: {os.getcwd()}")
-    from ..database.database import DATABASE_PATH as ACTUAL_DB_PATH_USED
+    from database.database import DATABASE_PATH as ACTUAL_DB_PATH_USED
     logger.info(f"Database file is expected to be managed by database.py at: {ACTUAL_DB_PATH_USED}")
     logger.info(f"Reference DATABASE_FILE_PATH in main.py is: {DATABASE_FILE_PATH}")
     

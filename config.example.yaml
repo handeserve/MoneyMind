@@ -1,0 +1,113 @@
+# MoneyMind 配置文件模板
+# 请复制此文件为 config.yaml 并填入真实的API密钥
+
+ai_services:
+  # 当前活跃的AI服务商 (deepseek | anthropic)
+  active_service: deepseek
+  
+  # AI分类并发数 (1-20)
+  classification_concurrency: 10
+  
+  # AI服务配置
+  services:
+    # DeepSeek API配置
+    deepseek:
+      api_key: ""  # 在此填入你的DeepSeek API密钥
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-chat"
+    
+    # Claude API配置 (可选)
+    anthropic:
+      api_key: ""  # 在此填入你的Claude API密钥 (可选)
+      base_url: "https://api.anthropic.com"
+      model: "claude-3-sonnet-20240229"
+
+# 提示词配置
+prompts:
+  user_prompt_template: "请将以下支出描述分类: {description}"
+
+# 预设分类体系 (可在设置页面修改)
+preset_categories:
+  餐饮美食:
+    - 日常三餐
+    - 外卖
+    - 聚餐
+    - 零食饮料
+    - 买菜
+  
+  交通出行:
+    - 公共交通
+    - 打车
+    - 加油
+    - 停车过路
+    - 车辆维保
+    - 机票火车
+  
+  生活居家:
+    - 房租房贷
+    - 水电燃气
+    - 通讯网络
+    - 生活用品
+    - 维修服务
+  
+  购物消费:
+    - 服饰鞋包
+    - 电子产品
+    - 家居电器
+    - 护肤美妆
+    - 礼物
+  
+  医疗健康:
+    - 门诊医药
+    - 健康保险
+    - 养生保健
+    - 运动健身
+  
+  娱乐休闲:
+    - 电影演出
+    - 书籍影音
+    - 游戏
+    - 旅游度假
+    - 宠物
+  
+  学习深造:
+    - 学费
+    - 课程培训
+    - 书籍资料
+  
+  亲友家庭:
+    - 亲属支出
+    - 育儿
+    - 人情往来
+  
+  金融投资:
+    - 银行手续费
+    - 税费
+    - 保险
+    - 投资理财
+  
+  其他杂项:
+    - 公益捐赠
+    - 意外支出
+    - 办公用品
+
+# 数据库配置
+database:
+  database_path: "data/moneymind.db"  # 数据库文件路径
+  backup_path: "data/backups"         # 备份文件目录
+  auto_backup: true                   # 是否自动备份
+  backup_interval: 24                 # 备份间隔(小时)
+
+# 应用程序设置
+app:
+  language: "zh-CN"        # 界面语言
+  theme: "light"           # 主题 (light | dark)
+  currency: "CNY"          # 货币单位
+  date_format: "YYYY-MM-DD" # 日期格式
+
+# 数据导入设置
+import:
+  auto_classify: true      # 导入后自动分类
+  skip_duplicates: true    # 跳过重复记录
+  batch_size: 50          # 批量处理大小
+  default_channel: "alipay" # 默认支付渠道 (alipay | wechat) 

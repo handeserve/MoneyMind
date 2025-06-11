@@ -99,20 +99,29 @@ ai_services:
 ```bash
 cd frontend
 npm install
-npm run build
 cd ..
 ```
 
 ### 5. 启动应用
-```bash
-# 启动后端服务
-python main.py
 
-# 或使用 uvicorn
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+需要同时启动后端和前端服务：
+
+**启动后端服务 (端口8000)：**
+```bash
+# 推荐方式：直接使用 uvicorn
+uvicorn presentation_layer.main:app --reload --host 0.0.0.0 --port 8000
+
+# 注意：run.py 文件可能已过时，建议使用上面的命令
 ```
 
-访问 `http://localhost:8000` 开始使用！
+**启动前端开发服务器 (端口5173)：**
+```bash
+cd frontend
+npm run dev
+```
+
+启动完成后：
+- **前端访问**：`http://localhost:5173` (用户界面)
 
 ## 📁 项目结构
 

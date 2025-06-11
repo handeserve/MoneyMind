@@ -31,21 +31,33 @@ env/
 *.swp
 *.swo
 
-# Database
+# Project specific
+config.yaml
+data/
+logs/
 *.db
 *.sqlite3
-
-# Logs
 *.log
 
-# OS
+# Environment variables
+.env
+.env.*
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# OS specific
 .DS_Store
+Thumbs.db
+
+# OS
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db
 
 # Project specific
 personal_expenses.db

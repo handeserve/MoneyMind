@@ -2,6 +2,7 @@
 from fastapi import FastAPI, HTTPException # Added HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import sqlite3 # For Connection type hint and errors
@@ -27,6 +28,17 @@ app = FastAPI(
     openapi_url="/api/v1/openapi.json"
 )
 
+# 添加CORS中间件
+# 允许所有来源，这在开发环境中通常是安全的。
+# 对于生产环境，您可能希望将其限制为您的前端部署的特定域。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有HTTP方法
+    allow_headers=["*"],  # 允许所有请求头
+)
+
 # --- Database Dependency Setup ---
 _main_py_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root_from_main = os.path.join(_main_py_dir, '..') 
@@ -48,7 +60,7 @@ def get_db():
 # API routers should be included before generic frontend routes
 app.include_router(expenses_router.router, prefix="/api/v1/expenses", tags=["Expenses Management"])
 app.include_router(import_router.router, prefix="/api/v1/import", tags=["Data Import"])
-app.include_router(dashboard_router.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
+app.include_router(dashboard_router.router, prefix="/api/v1/financial-overview", tags=["Dashboard"])
 app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["Settings"])
 app.include_router(ai_router.router, prefix="/api/v1/ai", tags=["AI Processing"]) # Added AI router
 

@@ -1,186 +1,124 @@
 import logging
 import requests
 import re
-import time
-import json # For formatting the category structure string neatly if needed
+import json
+from . import config_manager as cm
+from .prompts import generate_system_prompt
 
-# Import from local config_manager
-# cm_get_api_key is not directly used here anymore, config dict is passed.
-# get_config is used in the __main__ block for testing.
-from .config_manager import get_config
-
-# API URL - For now, this remains specific. Future enhancement could make this part of service_config.
-# For this task, we assume the default service is DeepSeek-compatible.
-LLM_API_URL_TEMPLATE = "{base_url}/v1/chat/completions" # Example, might need adjustment if base_url varies
-DEEPSEEK_BASE_URL = "https://api.deepseek.com" # Default, could be part of service_config later
-
+# Constants
 MAX_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 1
-REQUEST_TIMEOUT_SECONDS = 15
+REQUEST_TIMEOUT_SECONDS = 30
 
-logger = logging.getLogger(__name__) # Use module-level logger
+logger = logging.getLogger(__name__)
 
-def get_llm_classification(
-    description_for_ai: str,
-    config: dict, # Full config dict from config_manager.get_config()
-    amount: float | str | None = None,
-    channel: str | None = None,
-    source_provided_category: str | None = None
-) -> dict | None:
+def get_llm_classification(description: str) -> dict | None:
     """
-    Calls the configured default LLM API to get expense classification.
-    Currently assumes a DeepSeek-compatible API structure.
+    Calls the configured active LLM API to get expense classification.
+    It uses the global config via config_manager and expects a JSON response.
     """
-    logger.info(f"Attempting LLM classification for: '{description_for_ai}' using configured default service.")
+    logger.info(f"Attempting LLM classification for: '{description}'")
 
-    # 1. Retrieve Default Service and its Configuration
-    default_service_name = config.get('default_llm_service')
-    if not default_service_name:
-        logger.error("Default LLM service is not defined in configuration. Aborting classification.")
-        return None
-    logger.info(f"Using default LLM service: {default_service_name}")
-
-    service_config = config.get('llm_services', {}).get(default_service_name)
+    service_config = cm.get_active_ai_service_config()
     if not service_config:
-        logger.error(f"Configuration for LLM service '{default_service_name}' not found. Aborting classification.")
+        logger.error("No active AI service configured or configuration is incomplete. Aborting.")
         return None
-    
+
     api_key = service_config.get('api_key')
-    model_cfg = service_config.get('model_params', {})
-    
-    llm_model_name = model_cfg.get('model_name')
-    temperature = model_cfg.get('temperature', 0.7) # Default if not in config
-    # max_tokens = model_cfg.get('max_tokens') # Optional
+    base_url = service_config.get('base_url')
+    model = service_config.get('model')
 
-    # API URL construction (still assumes DeepSeek for now)
-    # Future: base_url could come from service_config if supporting other APIs
-    api_url = LLM_API_URL_TEMPLATE.format(base_url=DEEPSEEK_BASE_URL)
-
-
-    # 2. Error Handling for Essential Config
-    # Placeholder check (generic, config_manager's get_api_key has more specific default checks)
-    if not api_key or "YOUR_" in api_key.upper() or "_API_KEY_HERE" in api_key.upper():
-        logger.error(f"API key for service '{default_service_name}' is missing or appears to be a placeholder. Aborting classification.")
-        return None # Or return dummy for testing as per example, but for real use, None is better.
-        # return {"ai_suggestion_l1": "DummyL1 (No API Key)", "ai_suggestion_l2": "DummyL2"}
-
-
-    if not llm_model_name:
-        logger.error(f"Model name for service '{default_service_name}' is not configured. Aborting classification.")
-        return None
-
-    prompt_template = config.get('prompts', {}).get('classification_prompt_template')
-    preset_categories = config.get('preset_categories', {})
-
-    if not prompt_template:
-        logger.error("Classification prompt template is missing in configuration. Cannot proceed.")
-        return None
-    if not preset_categories:
-        logger.error("Preset categories are missing in configuration. Cannot proceed.")
-        return None
-
-    # 3. Prepare Prompt
-    available_categories_l1_list = list(preset_categories.keys())
-    available_categories_l1_list_str = ", ".join(available_categories_l1_list)
-
-    full_category_structure_parts = []
-    for l1, l2_list in preset_categories.items():
-        full_category_structure_parts.append(f"{l1}: {', '.join(l2_list)}")
-    full_category_structure_str = "; ".join(full_category_structure_parts)
-    
-    amount_str = str(amount) if amount is not None else "N/A"
-    channel_str = str(channel) if channel is not None else "N/A"
-    source_provided_category_str = str(source_provided_category) if source_provided_category is not None else "N/A"
-
-    try:
-        prompt = prompt_template.format(
-            description_for_ai=description_for_ai,
-            amount=amount_str,
-            channel=channel_str,
-            source_provided_category=source_provided_category_str,
-            available_categories_l1_list_str=available_categories_l1_list_str, # Corrected placeholder name
-            full_category_structure_str=full_category_structure_str           # Corrected placeholder name
-        )
-    except KeyError as e:
-        logger.error(f"Error formatting prompt template. Missing key: {e}. Check prompt template and available variables.")
+    if not all([api_key, base_url, model]):
+        logger.error(f"API key, base URL, or model is missing for the active service. Check config.")
         return None
     
-    logger.debug(f"Formatted prompt for LLM ({default_service_name} - {llm_model_name}):\n{prompt}")
+    if "YOUR_" in api_key.upper() or "API_KEY" in api_key.upper():
+        logger.error("API key appears to be a placeholder. Please update your configuration.")
+        return None
 
-    # 4. Make API Call
+    api_url = f"{base_url.rstrip('/')}/v1/chat/completions"
+
+    # Dynamically generate system prompt from categories
+    system_prompt = generate_system_prompt()
+    user_prompt_template = cm.get_prompt_template('user_prompt_template')
+    
+    if not system_prompt or not user_prompt_template:
+        logger.error("System prompt or user prompt template could not be generated/found.")
+        return None
+        
+    user_prompt = user_prompt_template.format(description=description)
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": llm_model_name,
+        "model": model,
         "messages": [
-            {"role": "system", "content": "You are an expert expense classification assistant. Respond strictly in the requested format."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ],
-        "temperature": temperature,
-        # if max_tokens: payload["max_tokens"] = max_tokens # Add if using max_tokens
+        "response_format": {"type": "json_object"}
     }
+    
+    logger.debug(f"Sending payload to {api_url}: {json.dumps(payload, indent=2, ensure_ascii=False)}")
 
-    response_json = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            response_json = response.json()
-            break 
-        except requests.exceptions.Timeout:
-            logger.warning(f"Request to {default_service_name} timed out on attempt {attempt + 1}/{MAX_RETRIES}.")
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"Connection error with {default_service_name} on attempt {attempt + 1}/{MAX_RETRIES}.")
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error from {default_service_name} on attempt {attempt + 1}/{MAX_RETRIES}: {e.response.status_code} - {e.response.text}")
-            if e.response.status_code < 500: 
-                return None 
-        except Exception as e: 
-            logger.error(f"An unexpected error occurred during API call to {default_service_name} attempt {attempt + 1}/{MAX_RETRIES}: {e}")
-        
-        if attempt < MAX_RETRIES - 1:
-            sleep_time = INITIAL_BACKOFF_SECONDS * (2 ** attempt)
-            logger.info(f"Retrying {default_service_name} call in {sleep_time} seconds...")
-            time.sleep(sleep_time)
-        else:
-            logger.error(f"Max retries reached. Failed to call {default_service_name} API.")
-            return None
-
-    if not response_json:
-        logger.error(f"No JSON response received from {default_service_name} API after retries.")
-        return None
-
-    # 5. Parse Response
     try:
-        content = response_json['choices'][0]['message']['content']
-        logger.debug(f"LLM ({default_service_name}) raw response content: {content}")
-
-        l1_match = re.search(r"L1 Category:\s*(.*)", content, re.IGNORECASE | re.DOTALL)
-        l2_match = re.search(r"L2 Category:\s*(.*)", content, re.IGNORECASE | re.DOTALL)
-
-        extracted_l1 = l1_match.group(1).strip() if l1_match else None
-        extracted_l2 = l2_match.group(1).strip() if l2_match else None
-
-        if not extracted_l1 or not extracted_l2:
-            logger.warning(f"Could not parse L1/L2 categories from LLM response ({default_service_name}): '{content}'. L1: {extracted_l1}, L2: {extracted_l2}")
-            return None
+        response = requests.post(api_url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        response_json = response.json()
         
-        if extracted_l1 not in preset_categories:
-            logger.warning(f"LLM ({default_service_name}) suggested L1 category '{extracted_l1}' which is not in presets. Storing it anyway.")
-        elif extracted_l2 not in preset_categories.get(extracted_l1, []):
-            logger.warning(f"LLM ({default_service_name}) suggested L2 category '{extracted_l2}' for L1 '{extracted_l1}', which is not in presets for that L1. Storing it anyway.")
+        content_str = response_json['choices'][0]['message']['content']
+        
+        # Robust JSON parsing from the response string
+        try:
+            # The ideal case: the whole string is a valid JSON object
+            data = json.loads(content_str)
+        except json.JSONDecodeError:
+            # If not, try to find a JSON block wrapped in ```json ... ```
+            json_match = re.search(r'```json\s*({.*?})\s*```', content_str, re.DOTALL)
+            if json_match:
+                content_str_extracted = json_match.group(1)
+            else:
+                # If no markdown block, find the first '{' and last '}'
+                start = content_str.find('{')
+                end = content_str.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    content_str_extracted = content_str[start:end+1]
+                else:
+                    logger.error(f"Failed to parse JSON and no clear JSON block found in response: {content_str}")
+                    return None
+            
+            try:
+                data = json.loads(content_str_extracted)
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse extracted JSON block: {content_str_extracted}")
+                return None
+            
+        logger.info(f"LLM classification successful: {data}")
+        
+        # Standardize the output keys
+        return {
+            "ai_suggestion_l1": data.get("category_l1"),
+            "ai_suggestion_l2": data.get("category_l2")
+        }
 
-        logger.info(f"LLM ({default_service_name}) classification successful: L1='{extracted_l1}', L2='{extracted_l2}'")
-        return {"ai_suggestion_l1": extracted_l1, "ai_suggestion_l2": extracted_l2}
-
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code
+        error_text = e.response.text
+        logger.error(f"HTTP error from LLM API: {status_code} - {error_text}")
+        # Pass detailed error info back for specific handling in the future
+        return {"error": f"API_HTTP_ERROR_{status_code}", "detail": error_text}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error during LLM API call: {e}")
+        return {"error": "API_NETWORK_ERROR", "detail": str(e)}
     except (KeyError, IndexError, TypeError) as e:
-        logger.error(f"Error parsing JSON response from {default_service_name} API: {e}. Response: {response_json}")
-        return None
-    except Exception as e: 
-        logger.error(f"An unexpected error occurred during response parsing from {default_service_name}: {e}")
-        return None
+        response_data = response.text if 'response' in locals() else "No response object"
+        logger.error(f"Error parsing response from LLM API: {e}. Response: {response_data}")
+        return {"error": "API_RESPONSE_PARSE_ERROR", "detail": str(e)}
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during LLM API call: {e}", exc_info=True)
+        return {"error": "UNEXPECTED_ERROR", "detail": str(e)}
 
 
 if __name__ == '__main__':
@@ -191,7 +129,7 @@ if __name__ == '__main__':
     
     # Load full application configuration
     # This uses the actual config.yaml or defaults if not found/parsable.
-    app_config = get_config() 
+    app_config = cm.get_config() 
     if not app_config:
         main_logger.error("Failed to load application configuration for testing. Aborting.")
         exit()
@@ -213,10 +151,7 @@ if __name__ == '__main__':
     
     main_logger.info("\nTesting pre-API call logic (placeholder key check is inside get_llm_classification):")
     test_result_placeholder_check = get_llm_classification(
-        description_for_ai="Test coffee shop with dynamic service",
-        config=app_config, # Pass the full config
-        amount="5.00",
-        channel="Credit Card"
+        description="Test coffee shop with dynamic service",
     )
     # The outcome depends on whether the actual key for 'default_service_to_test' in config.yaml is a placeholder.
     # If it's a placeholder, get_llm_classification should return None and log an error.
@@ -253,11 +188,7 @@ if __name__ == '__main__':
         for expense in sample_expenses_for_dynamic_test:
             main_logger.info(f"\nClassifying (dynamic service '{default_service_to_test}'): '{expense['desc']}'")
             result = get_llm_classification(
-                description_for_ai=expense["desc"],
-                config=app_config,
-                amount=expense["amt"],
-                channel=expense["chan"],
-                source_provided_category=expense["src_cat"]
+                description=expense["desc"],
             )
             main_logger.info(f"Classification for '{expense['desc']}': {result}")
             if result:

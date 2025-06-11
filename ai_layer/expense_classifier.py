@@ -1,325 +1,299 @@
 import logging
-import os
-from sqlite3 import Connection, Error as SQLiteError
-from typing import Optional, Dict, Any, List # Added List and Dict
-import time # For testing delays and unique IDs
+from sqlite3 import Connection
+from typing import Optional, Dict, Any, List
+import asyncio
+import concurrent.futures
+from functools import partial
 
 # Database related imports
-from database.database import get_expense_by_id, update_expense, get_db_connection, create_expense, delete_expense, DATABASE_PATH as DEFAULT_DB_PATH, get_expenses
-from ai_layer.config_manager import get_config, get_api_key as cm_get_api_key
+from database.database import get_expense_by_id, update_expense, get_db_connection, get_expenses
+# Use the aliased config_manager
+from ai_layer import config_manager as cm
 from ai_layer.llm_interface import get_llm_classification
 
 # Module-level logger
 logger = logging.getLogger(__name__)
 
-def classify_single_expense(db_conn: Connection, expense_id: int) -> bool:
+def classify_single_expense(db_conn: Connection, expense_id: int) -> dict | None:
     """
-    Classifies a single expense record using the LLM interface and updates the database.
-    (Content from previous implementation - assumed to be correct and complete)
+    Classifies a single expense, gets suggestions, and updates the database.
+    This now uses the refactored llm_interface and config_manager.
+    Returns the updated expense object on success, None on failure.
     """
     logger.info(f"Attempting to classify expense ID: {expense_id}")
     try:
         expense = get_expense_by_id(db_conn, expense_id)
         if not expense:
-            logger.warning(f"Expense ID {expense_id} not found. Cannot classify.")
-            return False
-        if expense.get('is_confirmed_by_user') == 1:
-            logger.info(f"Expense ID {expense_id} is already confirmed by user. Skipping AI classification.")
-            return False
+            logger.error(f"Expense with ID {expense_id} not found.")
+            return None
         
-        description_for_ai = expense.get('description_for_ai') or expense.get('source_raw_description')
-        if not description_for_ai:
-            logger.warning(f"Expense ID {expense_id} has no description. Cannot classify.")
-            return False
-            
-        amount = expense.get('amount')
-        channel = expense.get('channel')
-        source_provided_category = expense.get('source_provided_category')
-        app_config = get_config()
-        if not app_config:
-            logger.error("Failed to load application configuration for single classification.")
-            return False
+        # Try to get description for AI, fallback to raw description
+        description = expense.get('description_for_ai') or expense.get('source_raw_description')
+        if not description:
+            logger.error(f"Expense {expense_id} has no description (neither description_for_ai nor source_raw_description) for classification.")
+            return None
 
-        classification_result = get_llm_classification(
-            description_for_ai=description_for_ai, config=app_config,
-            amount=amount, channel=channel, source_provided_category=source_provided_category
-        )
-        if classification_result and classification_result.get('ai_suggestion_l1') and classification_result.get('ai_suggestion_l2'):
+        # llm_interface now handles its own configuration via the new config_manager
+        classification_result = get_llm_classification(description=description)
+
+        if classification_result and not classification_result.get("error"):
+            # 从LLM返回结果中获取分类信息
+            category_l1 = classification_result.get('ai_suggestion_l1') or classification_result.get('category_l1')
+            category_l2 = classification_result.get('ai_suggestion_l2') or classification_result.get('category_l2')
+            
             update_data = {
-                'ai_suggestion_l1': classification_result['ai_suggestion_l1'],
-                'ai_suggestion_l2': classification_result['ai_suggestion_l2'],
-                'is_classified_by_ai': 1
+                'category_l1': category_l1,
+                'category_l2': category_l2,
+                'ai_suggestion_l1': category_l1,
+                'ai_suggestion_l2': category_l2,
+                'is_classified_by_ai': 1,
+                'is_confirmed_by_user': 1  # 自动确认分类
             }
             if update_expense(db_conn, expense_id, update_data):
-                logger.info(f"Expense ID {expense_id} successfully classified and updated. L1: {update_data['ai_suggestion_l1']}, L2: {update_data['ai_suggestion_l2']}")
-                return True
+                logger.info(f"Expense ID {expense_id} successfully classified and updated.")
+                return get_expense_by_id(db_conn, expense_id) # Return updated expense
             else:
-                logger.error(f"Expense ID {expense_id}: Classified by LLM, but failed to update database.")
-                return False
+                logger.error(f"Failed to update database for expense ID {expense_id}.")
+                return None
         else:
-            logger.warning(f"Expense ID {expense_id}: LLM classification failed or no valid suggestions returned.")
-            return False
-    except SQLiteError as e:
-        logger.error(f"Database error during classification of expense ID {expense_id}: {e}")
-        return False
+            error_info = classification_result.get("detail") if classification_result else "No details"
+            logger.warning(f"LLM classification failed for expense ID {expense_id}. Details: {error_info}")
+            return None
     except Exception as e:
         logger.error(f"An unexpected error occurred during classification of expense ID {expense_id}: {e}", exc_info=True)
-        return False
+        return None
 
-def classify_batch_expenses(db_conn: Connection, limit: Optional[int] = None) -> Dict[str, Any]:
+def classify_single_expense_sync(expense: Dict[str, Any], db_conn: Connection) -> Dict[str, Any]:
     """
-    Classifies a batch of unclassified and unconfirmed expenses.
+    Synchronous wrapper for classifying a single expense for use in concurrent processing.
+    Returns a result dict with success status and details.
+    """
+    expense_id = expense.get('id')
+    
+    try:
+        # Try to get description for AI, fallback to raw description
+        description = expense.get('description_for_ai') or expense.get('source_raw_description')
+        if not description:
+            return {
+                'expense_id': expense_id,
+                'success': False,
+                'error': 'No description available'
+            }
 
-    Args:
-        db_conn: Active SQLite database connection.
-        limit: Optional integer to limit the number of expenses processed.
+        # Get classification from LLM
+        classification_result = get_llm_classification(description=description)
 
-    Returns:
-        A dictionary summarizing the batch operation.
+        if classification_result and not classification_result.get("error"):
+            # 从LLM返回结果中获取分类信息
+            category_l1 = classification_result.get('ai_suggestion_l1') or classification_result.get('category_l1')
+            category_l2 = classification_result.get('ai_suggestion_l2') or classification_result.get('category_l2')
+            
+            update_data = {
+                'category_l1': category_l1,
+                'category_l2': category_l2,
+                'ai_suggestion_l1': category_l1,
+                'ai_suggestion_l2': category_l2,
+                'is_classified_by_ai': 1,
+                'is_confirmed_by_user': 1  # 自动确认分类
+            }
+            if update_expense(db_conn, expense_id, update_data):
+                return {
+                    'expense_id': expense_id,
+                    'success': True,
+                    'classification': classification_result
+                }
+            else:
+                return {
+                    'expense_id': expense_id,
+                    'success': False,
+                    'error': 'Failed to update database'
+                }
+        else:
+            error_info = classification_result.get("detail") if classification_result else "LLM classification failed"
+            return {
+                'expense_id': expense_id,
+                'success': False,
+                'error': error_info
+            }
+    except Exception as e:
+        return {
+            'expense_id': expense_id,
+            'success': False,
+            'error': str(e)
+        }
+
+def classify_batch_expenses(db_conn: Connection, limit: Optional[int] = None, max_workers: int = 3) -> Dict[str, Any]:
+    """
+    Classifies a batch of unclassified expenses using the new config and interface.
     """
     log_prefix = f"Batch classify (limit: {limit if limit else 'None'}):"
     logger.info(f"{log_prefix} Starting process.")
 
-    # Fetch Unclassified Expenses
-    filters = {'is_classified_by_ai': 0, 'is_confirmed_by_user': 0}
-    page_to_fetch = 1
-    per_page_limit = limit if limit is not None and limit > 0 else 1000 # Default to a large number if no limit, or use limit
+    # Check for placeholder API key once before starting the loop.
+    # This prevents multiple warnings if the key is a placeholder.
+    active_service_config = cm.get_active_ai_service_config()
+    if not active_service_config or "YOUR_" in active_service_config.get("api_key", "").upper():
+         logger.warning(f"{log_prefix} Active AI service API key is a placeholder or missing. LLM calls will fail.")
+         # We can choose to abort early
+         # return {"error": "API key is a placeholder.", "message": "Batch process aborted."}
     
+    # Fetch Unclassified Expenses (no category_l1)
+    filters = {'category_l1_is_null': True}
     try:
-        # get_expenses expects page and per_page for limit.
-        # We only need one "page" of results up to the limit.
+        # Fetch all matching expenses up to a reasonable maximum if no limit is set
         fetched_data = get_expenses(
             db_connection=db_conn,
-            page=page_to_fetch,
-            per_page=per_page_limit,
+            page=1,
+            per_page=limit or 500, # Use limit or a default batch size
             filters=filters,
-            sort_by='id', # Process older expenses first
+            sort_by='id',
             sort_order='ASC'
         )
         expenses_to_process: List[Dict[str, Any]] = fetched_data.get('expenses', [])
-        total_matching_criteria = fetched_data.get('total_count', 0) # Total that could be processed over time
+        total_matching_criteria = fetched_data.get('total_count', 0)
 
         if not expenses_to_process:
-            logger.info(f"{log_prefix} No expenses found matching criteria for batch classification.")
-            return {
-                "total_matching_criteria": total_matching_criteria,
-                "processed_in_this_batch": 0,
-                "successfully_classified": 0,
-                "failed_to_classify": 0,
-                "message": "No expenses to process."
-            }
+            logger.info(f"{log_prefix} No unclassified expenses found.")
+            return {"message": "No expenses to process."}
         
-        logger.info(f"{log_prefix} Fetched {len(expenses_to_process)} expenses to process (out of {total_matching_criteria} total matching).")
+        logger.info(f"{log_prefix} Fetched {len(expenses_to_process)} expenses to process.")
 
-    except SQLiteError as e:
-        logger.error(f"{log_prefix} Database error fetching expenses: {e}")
-        return {"error": "Database error fetching expenses", "details": str(e)}
     except Exception as e:
         logger.error(f"{log_prefix} Unexpected error fetching expenses: {e}", exc_info=True)
         return {"error": "Unexpected error fetching expenses", "details": str(e)}
 
     # Initialize Counters
-    processed_count = 0
     successfully_classified_count = 0
     failed_count = 0
 
-    # Load Config
-    app_config = get_config()
-    if not app_config:
-        logger.error(f"{log_prefix} Failed to load application configuration. Aborting batch.")
-        return {
-            "total_matching_criteria": total_matching_criteria,
-            "processed_in_this_batch": 0,
-            "successfully_classified": 0,
-            "failed_to_classify": 0,
-            "error": "Failed to load configuration."
-        }
+    # Use concurrent processing for better performance
+    logger.info(f"{log_prefix} Using concurrent processing with {max_workers} workers.")
     
-    # Check for placeholder API key before starting the loop
-    # This prevents multiple warnings if the key is a placeholder
-    api_key_for_check = cm_get_api_key() # Gets key for default service
-    if not api_key_for_check or "YOUR_DEEPSEEK_API_KEY_HERE" in api_key_for_check or "ANOTHER_KEY_HERE" in api_key_for_check:
-        logger.warning(f"{log_prefix} API key is a placeholder or missing. Actual LLM calls will be skipped by get_llm_classification.")
-        # The loop will still run, but get_llm_classification will return None for each.
-
-    # Iterate and Classify
-    for expense in expenses_to_process:
-        expense_id = expense.get('id')
-        if expense_id is None:
-            logger.warning(f"{log_prefix} Found expense data without an ID: {expense}. Skipping.")
-            failed_count +=1 # Count as failed if ID is missing
-            continue
-
-        processed_count += 1
-        logger.info(f"{log_prefix} Processing expense ID: {expense_id} ({processed_count}/{len(expenses_to_process)})")
-
-        description_for_ai = expense.get('description_for_ai') or expense.get('source_raw_description')
-        if not description_for_ai:
-            logger.warning(f"{log_prefix} Expense ID {expense_id} has no description. Skipping classification.")
-            failed_count += 1
-            continue
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Create a partial function with the database connection pre-filled
+        classify_func = partial(classify_single_expense_sync, db_conn=db_conn)
+        
+        # Submit all classification tasks
+        future_to_expense = {
+            executor.submit(classify_func, expense): expense 
+            for expense in expenses_to_process
+        }
+        
+        # Process completed tasks as they finish
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_expense)):
+            expense = future_to_expense[future]
+            expense_id = expense.get('id')
             
-        amount = expense.get('amount')
-        channel = expense.get('channel')
-        source_provided_category = expense.get('source_provided_category')
-
-        try:
-            classification_result = get_llm_classification(
-                description_for_ai=description_for_ai, config=app_config,
-                amount=amount, channel=channel, source_provided_category=source_provided_category
-            )
-
-            if classification_result and classification_result.get('ai_suggestion_l1') and classification_result.get('ai_suggestion_l2'):
-                update_data = {
-                    'ai_suggestion_l1': classification_result['ai_suggestion_l1'],
-                    'ai_suggestion_l2': classification_result['ai_suggestion_l2'],
-                    'is_classified_by_ai': 1
-                }
-                if update_expense(db_conn, expense_id, update_data):
+            logger.info(f"{log_prefix} Processing expense ID: {expense_id} ({i+1}/{len(expenses_to_process)})")
+            
+            try:
+                result = future.result()
+                if result['success']:
                     successfully_classified_count += 1
-                    logger.info(f"{log_prefix} Expense ID {expense_id} successfully classified and updated.")
+                    logger.info(f"{log_prefix} Expense ID {expense_id}: Successfully classified.")
                 else:
                     failed_count += 1
-                    logger.error(f"{log_prefix} Expense ID {expense_id}: Classified by LLM, but failed to update database.")
-            else:
+                    logger.warning(f"{log_prefix} Expense ID {expense_id}: Failed - {result.get('error', 'Unknown error')}")
+                    
+            except Exception as e_inner:
                 failed_count += 1
-                logger.warning(f"{log_prefix} Expense ID {expense_id}: LLM classification failed or no valid suggestions returned.")
-        except Exception as e_inner: # Catch errors during individual classification/update
-            failed_count += 1
-            logger.error(f"{log_prefix} Error processing expense ID {expense_id}: {e_inner}", exc_info=True)
-        
-        # Optional delay (consider adding if rate limits are an issue)
-        # time.sleep(0.5) # Example: 0.5 second delay
+                logger.error(f"{log_prefix} Error processing expense ID {expense_id}: {e_inner}", exc_info=True)
 
-    logger.info(f"{log_prefix} Process complete. Total fetched: {len(expenses_to_process)}, Processed in this run: {processed_count}, Successfully classified: {successfully_classified_count}, Failed: {failed_count}")
+    summary_message = (
+        f"Batch process complete. Processed: {len(expenses_to_process)}, "
+        f"Succeeded: {successfully_classified_count}, Failed: {failed_count}"
+    )
+    logger.info(f"{log_prefix} {summary_message}")
+    
     return {
         "total_matching_criteria": total_matching_criteria,
-        "processed_in_this_batch": processed_count,
+        "processed_in_this_batch": len(expenses_to_process),
         "successfully_classified": successfully_classified_count,
-        "failed_to_classify": failed_count
+        "failed_to_classify": failed_count,
+        "message": summary_message
     }
 
+def get_unclassified_expense_ids(db_conn: Connection) -> Dict[str, Any]:
+    """
+    获取所有未分类记录的ID列表
+    """
+    try:
+        filters = {'category_l1_is_null': True}
+        fetched_data = get_expenses(
+            db_connection=db_conn,
+            page=1,
+            per_page=10000,  # 获取大量记录
+            filters=filters,
+            sort_by='id',
+            sort_order='ASC'
+        )
+        
+        expenses = fetched_data.get('expenses', [])
+        expense_ids = [expense['id'] for expense in expenses]
+        
+        return {
+            "expense_ids": expense_ids,
+            "total_count": len(expense_ids)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get unclassified expense IDs: {e}", exc_info=True)
+        return {"error": "Failed to get unclassified expense IDs", "details": str(e)}
+
+def classify_expense_by_id(db_conn: Connection, expense_id: int) -> Dict[str, Any]:
+    """
+    根据ID分类单个记录，返回结果状态
+    """
+    try:
+        # 获取记录详情
+        expense = get_expense_by_id(db_conn, expense_id)
+        if not expense:
+            return {
+                'expense_id': expense_id,
+                'success': False,
+                'error': 'Expense not found'
+            }
+        
+        # 调用已有的同步分类函数
+        result = classify_single_expense_sync(expense, db_conn)
+        return result
+        
+    except Exception as e:
+        return {
+            'expense_id': expense_id,
+            'success': False,
+            'error': str(e)
+        }
 
 if __name__ == '__main__':
-    # Configure logging for detailed test output
-    # Using module-level logger obtained by getLogger(__name__) is better than getLogger("expense_classifier_test")
-    # as it reflects the module hierarchy.
-    # For __main__ execution, __name__ is "__main__". For imported, it's "personal_expense_analyzer.ai_layer.expense_classifier".
+    # Simplified test runner for the new structure
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s.%(funcName)s:%(lineno)d] - %(message)s')
-    # Test logger for __main__ scope
-    main_logger = logging.getLogger(__name__) # This will be "__main__" logger
-
-    db_path_to_use = DEFAULT_DB_PATH
-    main_logger.info(f"Using database for test: {db_path_to_use}")
+    main_logger = logging.getLogger(__name__)
 
     db_conn_main = None
-    test_expense_ids_main = [] # Store IDs of all created test expenses
-
     try:
         db_conn_main = get_db_connection()
         if not db_conn_main:
             main_logger.error("Failed to establish database connection. Aborting test.")
             exit(1)
 
-        from database.database import create_tables
-        create_tables(db_conn_main)
-        main_logger.info("Database tables ensured.")
-
-        # --- Test classify_single_expense (briefly, already tested before) ---
-        main_logger.info("\n--- Testing classify_single_expense (brief check) ---")
-        single_test_data = {
-            'transaction_time': '2024-07-30T10:00:00Z', 'amount': '15.00', 'channel': 'SingleTest',
-            'source_raw_description': 'Single test coffee', 'description_for_ai': 'Single test coffee for AI',
-            'external_transaction_id': f'TEST_SINGLE_{int(time.time())}'
-        }
-        single_id = create_expense(db_conn_main, single_test_data)
-        if single_id:
-            test_expense_ids_main.append(single_id)
-            main_logger.info(f"Created single test expense ID: {single_id}")
-            classify_single_expense(db_conn_main, single_id) # Result depends on API key
+        # Find one unclassified expense to test single classification
+        unclassified_expenses = get_expenses(db_conn_main, 1, 1, {'is_classified_by_ai': 0, 'is_confirmed_by_user': 0}).get('expenses', [])
+        
+        if unclassified_expenses:
+            test_id = unclassified_expenses[0]['id']
+            main_logger.info(f"\n--- Testing classify_single_expense on existing ID: {test_id} ---")
+            result = classify_single_expense(db_conn_main, test_id)
+            main_logger.info(f"Single classification result: {result}")
         else:
-            main_logger.warning("Failed to create single test expense, possibly due to unique constraint if run before.")
-
-        # --- Test classify_batch_expenses ---
+            main_logger.info("\n--- No unclassified expenses found to test classify_single_expense ---")
+            
         main_logger.info("\n--- Testing classify_batch_expenses ---")
-        
-        # Create some unclassified, unconfirmed expenses for batch processing
-        batch_test_data = [
-            {'transaction_time': '2024-07-30T11:00:00Z', 'amount': '100.00', 'channel': 'BatchTest', 'source_raw_description': 'Batch item 1 - Groceries for week', 'description_for_ai': 'Groceries for week', 'is_classified_by_ai': 0, 'is_confirmed_by_user': 0, 'external_transaction_id': f'BATCH_TEST_{int(time.time())}_1'},
-            {'transaction_time': '2024-07-30T12:00:00Z', 'amount': '25.50', 'channel': 'BatchTest', 'source_raw_description': 'Batch item 2 - Taxi to meeting', 'description_for_ai': 'Taxi to meeting', 'is_classified_by_ai': 0, 'is_confirmed_by_user': 0, 'external_transaction_id': f'BATCH_TEST_{int(time.time())}_2'},
-            {'transaction_time': '2024-07-30T13:00:00Z', 'amount': '60.75', 'channel': 'BatchTest', 'source_raw_description': 'Batch item 3 - Online subscription renewal', 'description_for_ai': 'Online subscription renewal', 'is_classified_by_ai': 0, 'is_confirmed_by_user': 0, 'external_transaction_id': f'BATCH_TEST_{int(time.time())}_3'},
-            {'transaction_time': '2024-07-30T14:00:00Z', 'amount': '5.00', 'channel': 'BatchTest', 'source_raw_description': 'Batch item 4 - Office coffee', 'description_for_ai': 'Office coffee', 'is_classified_by_ai': 0, 'is_confirmed_by_user': 0, 'external_transaction_id': f'BATCH_TEST_{int(time.time())}_4'},
-            {'transaction_time': '2024-07-30T15:00:00Z', 'amount': '10.00', 'channel': 'BatchTest', 'source_raw_description': 'Batch item 5 - Parking fee', 'description_for_ai': 'Parking fee', 'is_classified_by_ai': 0, 'is_confirmed_by_user': 0, 'external_transaction_id': f'BATCH_TEST_{int(time.time())}_5'},
-            # This one should NOT be picked up by the batch
-            {'transaction_time': '2024-07-30T16:00:00Z', 'amount': '50.00', 'channel': 'BatchTest', 'source_raw_description': 'Batch item 6 - Already confirmed', 'description_for_ai': 'Already confirmed', 'is_classified_by_ai': 0, 'is_confirmed_by_user': 1, 'external_transaction_id': f'BATCH_TEST_{int(time.time())}_6'},
-        ]
-        
-        batch_ids_created = []
-        for data in batch_test_data:
-            exp_id = create_expense(db_conn_main, data)
-            if exp_id:
-                batch_ids_created.append(exp_id)
-                test_expense_ids_main.append(exp_id) # Add to overall list for cleanup
-        main_logger.info(f"Created {len(batch_ids_created)} expenses for batch test. IDs: {batch_ids_created}")
+        batch_result = classify_batch_expenses(db_conn_main, limit=5) # Test with a small limit
+        main_logger.info(f"Batch classification result: {batch_result}")
 
-        # Check API key status
-        api_key_for_batch_test = cm_get_api_key()
-        if not api_key_for_batch_test or "YOUR_DEEPSEEK_API_KEY_HERE" in api_key_for_batch_test or "ANOTHER_KEY_HERE" in api_key_for_batch_test:
-            main_logger.warning("API key is a placeholder. Batch classification will run, but no actual LLM calls will be made (expecting all to 'fail' classification).")
-        else:
-            main_logger.info("Valid API key found. Batch classification will attempt real LLM calls.")
-
-        # Call classify_batch_expenses with a limit
-        batch_limit = 3
-        main_logger.info(f"Calling classify_batch_expenses with limit: {batch_limit}")
-        batch_summary = classify_batch_expenses(db_conn_main, limit=batch_limit)
-        main_logger.info(f"Batch Classification Summary (limit {batch_limit}): {batch_summary}")
-
-        # Verify results (example for the first few)
-        if batch_ids_created:
-            main_logger.info("Verifying expenses after first batch run:")
-            for i, exp_id_to_check in enumerate(batch_ids_created):
-                if i < batch_limit: # Only check those that should have been processed
-                    expense_after_batch = get_expense_by_id(db_conn_main, exp_id_to_check)
-                    if expense_after_batch:
-                        main_logger.info(f"  ID {exp_id_to_check}: AI Classified: {expense_after_batch['is_classified_by_ai']}, L1: {expense_after_batch['ai_suggestion_l1']}, L2: {expense_after_batch['ai_suggestion_l2']}")
-                    else:
-                         main_logger.error(f"Could not retrieve expense ID {exp_id_to_check} after batch.")
-                elif expense_after_batch := get_expense_by_id(db_conn_main, exp_id_to_check): # Check those beyond limit
-                     if expense_after_batch['is_classified_by_ai'] == 1:
-                          main_logger.warning(f"  ID {exp_id_to_check} (beyond limit) was classified. Check batch logic.")
-
-
-        # Call again to process remaining (if any)
-        main_logger.info("\nCalling classify_batch_expenses again (no limit, to process remaining)")
-        batch_summary_2 = classify_batch_expenses(db_conn_main) # No limit
-        main_logger.info(f"Batch Classification Summary (run 2): {batch_summary_2}")
-        
-        # Verify all applicable are processed
-        main_logger.info("Verifying expenses after second batch run:")
-        for exp_id_to_check in batch_ids_created:
-            # Find original data to check if it should have been processed
-            original_data = next((d for d in batch_test_data if d['external_transaction_id'] == get_expense_by_id(db_conn_main, exp_id_to_check).get('external_transaction_id')), None)
-            if original_data and original_data['is_confirmed_by_user'] == 0: # Should have been processed
-                expense_after_batch_2 = get_expense_by_id(db_conn_main, exp_id_to_check)
-                if expense_after_batch_2:
-                    main_logger.info(f"  ID {exp_id_to_check}: AI Classified: {expense_after_batch_2['is_classified_by_ai']}, L1: {expense_after_batch_2['ai_suggestion_l1']}, L2: {expense_after_batch_2['ai_suggestion_l2']}")
-                else:
-                    main_logger.error(f"Could not retrieve expense ID {exp_id_to_check} after batch 2.")
-
-    except Exception as e_main_test:
-        main_logger.error(f"An error occurred in the main test block: {e_main_test}", exc_info=True)
+    except Exception as e:
+        main_logger.error(f"An error occurred during the test run: {e}", exc_info=True)
     finally:
-        if db_conn_main and test_expense_ids_main:
-            main_logger.info(f"\nCleaning up {len(test_expense_ids_main)} test expenses...")
-            cleaned_count = 0
-            for exp_id in test_expense_ids_main:
-                if delete_expense(db_conn_main, exp_id):
-                    cleaned_count +=1
-            main_logger.info(f"Successfully deleted {cleaned_count} test expenses.")
-        
         if db_conn_main:
             db_conn_main.close()
             main_logger.info("Database connection closed.")
-
-    main_logger.info("\nExpense classifier test script finished.")

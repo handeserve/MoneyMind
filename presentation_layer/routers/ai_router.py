@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from presentation_layer.dependencies import get_db 
 
 # AI Layer function
-from ai_layer.expense_classifier import classify_batch_expenses
+from ai_layer.expense_classifier import classify_batch_expenses, get_unclassified_expense_ids, classify_expense_by_id
 from ai_layer.llm_interface import get_llm_classification
 from ai_layer.config_manager import get_prompt_template, get_preset_categories
 import logging # For logging
@@ -21,6 +21,43 @@ router = APIRouter()
 
 class BatchClassifyRequest(BaseModel):
     limit: Optional[int] = Field(None, gt=0, description="Optional limit for the number of expenses to process in this batch.")
+    max_workers: Optional[int] = Field(3, ge=1, le=10, description="Number of concurrent workers for parallel processing (1-10, default: 3)")
+
+class ClassifyByIdRequest(BaseModel):
+    expense_id: int = Field(..., description="The ID of the expense to classify")
+
+# --- API Endpoints ---
+
+@router.get("/unclassified_expense_ids", response_model=Dict[str, Any])
+async def get_unclassified_ids(db: Connection = Depends(get_db)):
+    """
+    获取所有未分类记录的ID列表
+    """
+    try:
+        result = get_unclassified_expense_ids(db)
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting unclassified expense IDs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get unclassified expense IDs")
+
+@router.post("/classify_single_expense", response_model=Dict[str, Any])
+async def classify_single_by_id(
+    request: ClassifyByIdRequest,
+    db: Connection = Depends(get_db)
+):
+    """
+    根据ID分类单个记录
+    """
+    try:
+        result = classify_expense_by_id(db, request.expense_id)
+        return result
+    except Exception as e:
+        logger.error(f"Error classifying expense by ID {request.expense_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to classify expense: {str(e)}")
 
 # --- API Endpoint for Batch Classification ---
 
@@ -38,12 +75,13 @@ async def trigger_batch_classify_expenses(
     Triggers a batch AI classification process for unclassified expenses.
     """
     limit_value = request_body.limit if request_body and request_body.limit is not None else None
+    max_workers_value = request_body.max_workers if request_body and request_body.max_workers is not None else 3
     
-    logger.info(f"Received request for batch classification. Limit: {limit_value if limit_value is not None else 'None'}")
+    logger.info(f"Received request for batch classification. Limit: {limit_value if limit_value is not None else 'None'}, Max Workers: {max_workers_value}")
 
     try:
         # Call the batch classification function from the AI layer
-        summary = classify_batch_expenses(db, limit=limit_value)
+        summary = classify_batch_expenses(db, limit=limit_value, max_workers=max_workers_value)
         
         # The summary from classify_batch_expenses already contains messages and counts.
         # We can add a general API message if needed, or just return the detailed summary.

@@ -3,6 +3,7 @@ from datetime import datetime
 import logging
 from decimal import Decimal, InvalidOperation
 from typing import List, Dict, Any
+import re
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -34,165 +35,329 @@ def _parse_datetime(datetime_str):
     return dt_obj.strftime('%Y-%m-%d %H:%M:%S')
 
 def _clean_amount(amount_str, currency_symbol="元"):
-    """Removes currency symbol and converts to positive Decimal."""
-    if not amount_str:
-        return None
-    cleaned_str = amount_str.replace(currency_symbol, "").strip()
+    """Cleans and converts amount string to float."""
+    if not amount_str or amount_str.strip() == '':
+        return 0.0
+    
+    # Remove currency symbols and whitespace
+    cleaned = amount_str.replace('¥', '').replace(currency_symbol, '').strip()
     try:
-        amount_decimal = Decimal(cleaned_str)
-        return abs(amount_decimal) # Ensure positive
-    except InvalidOperation:
-        logging.warning(f"Could not convert amount string to Decimal: {amount_str}. Returning None.")
-        return None
+        return float(cleaned)
+    except ValueError:
+        logger.warning(f"Could not parse amount: {amount_str}")
+        return 0.0
 
 def _get_row_value(row, header_map, key, default=''):
-    """Safely get a value from a row using the header map, stripping whitespace."""
-    value = row.get(header_map.get(key, ''), default).strip()
-    # Alipay CSVs often have "\t" at the end of some fields, remove it
-    if value.endswith('\t'):
-        value = value[:-1].strip()
-    return value
+    """Helper to get value from row using header mapping."""
+    index = header_map.get(key, -1)
+    if index >= 0 and index < len(row):
+        return row[index].strip()
+    return default
 
 def parse_wechat_csv(file_path: str) -> List[Dict[str, Any]]:
     """
     解析微信账单 CSV 文件。
-    微信账单从第 17 行开始是数据。
+    微信CSV文件格式：前面有大量元数据，然后是"----------------------微信支付账单明细列表--------------------"分隔符，
+    接着是表头，然后是实际数据行。数据行可能是制表符分隔或逗号分隔。
     """
-    encodings_to_try = ['utf-8', 'gbk']
+    encodings_to_try = ['utf-8', 'gbk', 'utf-8-sig']
+    
     for encoding in encodings_to_try:
         try:
             with open(file_path, 'r', encoding=encoding) as f:
-                lines = f.readlines()
+                content = f.read()
+                
+            lines = content.split('\n')
             
-            if len(lines) < 17:
-                logging.error(f"WeChat CSV file too short: {file_path}")
-                return []
+            if len(lines) < 20:
+                logger.error(f"WeChat CSV file too short: {file_path}")
+                continue
+
+            # 查找表头行（在"----------------------微信支付账单明细列表--------------------"之后）
+            header_line_index = -1
+            data_start_index = -1
             
-            # 从第 17 行开始读取数据
-            data_start_line = 16  # 0-based index
-            headers = [h.strip() for h in lines[data_start_line].strip().split(',')]
+            for i, line in enumerate(lines):
+                line = line.strip()
+                # 寻找包含所有必要字段的表头行
+                if ('交易时间' in line and '交易对方' in line and '金额' in line and 
+                    '收/支' in line and '当前状态' in line):
+                    header_line_index = i
+                    data_start_index = i + 1
+                    break
+                
+            if header_line_index == -1:
+                logger.error(f"Could not find header line in WeChat CSV: {file_path}")
+                continue
+            
+            # 解析表头
+            header_line = lines[header_line_index].strip()
+            
+            # 微信CSV表头通常是逗号分隔
+            if ',' in header_line:
+                # 使用CSV reader处理可能包含逗号的表头
+                reader = csv.reader([header_line])
+                headers = [h.strip().replace('"', '') for h in next(reader)]
+            else:
+                # 如果没有逗号，可能是制表符分隔
+                headers = [h.strip().replace('"', '') for h in header_line.split('\t')]
+            
+            logger.info(f"Found WeChat headers at line {header_line_index + 1}: {headers}")
+            
+            # 创建表头映射
+            header_map = {}
+            for i, header in enumerate(headers):
+                header_map[header] = i
             
             # 验证必要的表头
-            required_headers = ['交易时间', '商品', '金额', '收/支', '交易状态']
-            if not all(h in headers for h in required_headers):
-                logging.error(f"Missing required headers in WeChat CSV: {file_path}")
-                return []
+            required_headers = ['交易时间', '金额(元)', '收/支', '当前状态']
+            missing_headers = [h for h in required_headers if h not in header_map]
+            if missing_headers:
+                logger.error(f"Missing required headers in WeChat CSV: {missing_headers}")
+                continue
             
-            expenses = []
-            for line in lines[data_start_line + 1:]:
-                if not line.strip():
+            records = []
+            for line_num, line in enumerate(lines[data_start_index:], start=data_start_index + 1):
+                line = line.strip()
+                if not line or len(line) < 10:
                     continue
-                values = [v.strip() for v in line.strip().split(',')]
-                if len(values) != len(headers):
-                    continue
-                
-                record = dict(zip(headers, values))
-                if record['交易状态'] != '支付成功':
-                    continue
-                
-                try:
-                    amount = float(record['金额'])
-                    if record['收/支'] == '支出':
-                        amount = -amount
                     
-                    expenses.append({
-                        'date': record['交易时间'],
-                        'amount': amount,
-                        'category': record['商品'],
-                        'description': record['商品'],
-                        'channel': 'WeChat'
-                    })
-                except (ValueError, KeyError) as e:
-                    logging.error(f"Error parsing WeChat record: {e}")
+                try:
+                    # 解析数据行
+                    row = []
+                    
+                    # 首先尝试使用CSV reader（处理逗号分隔和引号包围）
+                    try:
+                        reader = csv.reader([line])
+                        row = next(reader)
+                    except:
+                        # 如果CSV reader失败，尝试制表符分隔
+                        if '\t' in line:
+                            row = [field.strip().replace('"', '') for field in line.split('\t')]
+                        else:
+                            # 最后尝试简单的逗号分隔
+                            row = [field.strip().replace('"', '') for field in line.split(',')]
+                    
+                    # 过滤掉明显不完整的行
+                    if len(row) < len(headers) - 2:  # 允许缺少最后几个字段
+                        continue
+                    
+                    # 确保row有足够的元素
+                    while len(row) < len(headers):
+                        row.append('')
+                    
+                    # 获取关键字段
+                    transaction_time = _get_row_value(row, header_map, '交易时间')
+                    amount_str = _get_row_value(row, header_map, '金额(元)')
+                    transaction_type = _get_row_value(row, header_map, '收/支')
+                    status = _get_row_value(row, header_map, '当前状态')
+                    merchant = _get_row_value(row, header_map, '交易对方')
+                    product = _get_row_value(row, header_map, '商品')
+                    payment_method = _get_row_value(row, header_map, '支付方式')
+                    transaction_id = _get_row_value(row, header_map, '交易单号')
+                    merchant_id = _get_row_value(row, header_map, '商户单号')
+                    note = _get_row_value(row, header_map, '备注')
+                    category = _get_row_value(row, header_map, '交易类型')
+                    
+                    # 过滤无效记录
+                    if not transaction_time or not amount_str:
+                        continue
+                        
+                    # 只处理成功的支出交易
+                    if status not in ['支付成功', '已转账', '对方已收钱', '对方已退还']:
+                        continue
+                        
+                    if transaction_type not in ['支出']:
+                        continue
+                    
+                    # 解析时间
+                    parsed_time = _parse_datetime(transaction_time)
+                    if not parsed_time:
+                        continue
+                        
+                    # 解析金额
+                    amount = _clean_amount(amount_str)
+                    if amount <= 0:
+                        continue
+                    
+                    # 构建描述
+                    description_parts = []
+                    if merchant and merchant != '/':
+                        description_parts.append(merchant)
+                    if product and product != '/':
+                        description_parts.append(product)
+                    if note and note != '/':
+                        description_parts.append(note)
+                    
+                    description = ' - '.join(description_parts) if description_parts else '微信支付'
+                    
+                    record = {
+                        'transaction_time': parsed_time,
+                        'amount': -amount,  # 支出为负数
+                        'currency': 'CNY',
+                        'channel': 'wechat',  # 统一使用小写
+                        'source_raw_description': description,
+                        'description_for_ai': description,
+                        'external_transaction_id': transaction_id,
+                        'external_merchant_id': merchant_id,
+                        'source_provided_category': category,
+                        'source_payment_method': payment_method,
+                        'source_transaction_status': status
+                    }
+                    
+                    records.append(record)
+                    
+                except Exception as e:
+                    logger.warning(f"Error parsing WeChat line {line_num}: {str(e)}")
                     continue
             
-            return expenses
+            logger.info(f"Successfully parsed {len(records)} records from WeChat CSV")
+            return records
+            
         except UnicodeDecodeError:
-            logging.warning(f"UnicodeDecodeError with {encoding} for file: {file_path}. Trying next encoding.")
+            logger.warning(f"UnicodeDecodeError with {encoding} for file: {file_path}. Trying next encoding.")
             continue
         except Exception as e:
-            logging.error(f"Error parsing WeChat CSV file {file_path}: {e}")
-            return []
-    
-    logging.error(f"Could not parse WeChat CSV file {file_path} with any encoding.")
+            logger.error(f"Error parsing WeChat CSV file {file_path} with {encoding}: {e}")
+            continue
+
+    logger.error(f"Could not parse WeChat CSV file {file_path} with any encoding.")
     return []
 
 def parse_alipay_csv(file_path: str) -> List[Dict[str, Any]]:
     """
-    Parse Alipay CSV file.
+    解析支付宝CSV文件
     """
     logger.info(f"Parsing Alipay CSV file: {file_path}")
     records = []
-    
+
     # 尝试不同的编码
-    encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030']
+    encodings_to_try = ['gbk', 'utf-8', 'utf-8-sig']
     
-    for encoding in encodings:
+    for encoding in encodings_to_try:
         try:
             with open(file_path, 'r', encoding=encoding) as f:
-                # 读取所有行
                 lines = f.readlines()
                 
-                # 打印实际读取到的表头
-                if len(lines) > 0:
-                    headers = [h.strip() for h in lines[0].strip().split(',')]
-                    logger.info(f"Actual headers in Alipay CSV: {headers}")
+            # 查找表头行
+            header_line_index = -1
+            for i, line in enumerate(lines):
+                if '交易时间' in line and '交易分类' in line and '金额' in line:
+                    header_line_index = i
+                    break 
                 
-                # 从第25行开始读取数据
-                for line in lines[24:]:  # 跳过前24行
-                    if not line.strip():  # 跳过空行
+            if header_line_index == -1:
+                logger.error("Could not find header line in Alipay CSV file")
+                continue
+            
+            # 获取表头
+            header_line = lines[header_line_index].strip()
+            headers = [h.strip() for h in header_line.split(',')]
+            logger.info(f"Found Alipay headers at line {header_line_index + 1}: {headers}")
+            
+            # 创建表头映射
+            header_map = {}
+            for i, header in enumerate(headers):
+                header_map[header] = i
+            
+            # 验证必要的表头
+            required_headers = ['交易时间', '金额', '收/支', '交易状态']
+            missing_headers = [h for h in required_headers if h not in header_map]
+            if missing_headers:
+                logger.error(f"Missing required headers in Alipay CSV: {missing_headers}")
+                continue
+            
+            # 从表头后开始读取数据
+            for line_num, line in enumerate(lines[header_line_index + 1:], start=header_line_index + 2):
+                line = line.strip()
+                if not line or line.startswith('-') or ',' not in line:
+                    continue
+
+                try:
+                    # 使用CSV reader处理可能包含逗号的字段
+                    reader = csv.reader([line])
+                    row = next(reader)
+                    
+                    if len(row) < len(headers):
+                        logger.warning(f"Skipping malformed line {line_num}: insufficient fields")
+                        continue
+                    
+                    # 获取关键字段
+                    transaction_time = _get_row_value(row, header_map, '交易时间')
+                    amount_str = _get_row_value(row, header_map, '金额')
+                    transaction_type = _get_row_value(row, header_map, '收/支')
+                    status = _get_row_value(row, header_map, '交易状态')
+                    merchant = _get_row_value(row, header_map, '交易对方')
+                    product = _get_row_value(row, header_map, '商品说明')
+                    category = _get_row_value(row, header_map, '交易分类')
+                    payment_method = _get_row_value(row, header_map, '收/付款方式')
+                    transaction_id = _get_row_value(row, header_map, '交易订单号')
+                    merchant_id = _get_row_value(row, header_map, '商家订单号')
+                    note = _get_row_value(row, header_map, '备注')
+                    
+                    # 过滤无效记录
+                    if not transaction_time or not amount_str:
                         continue
                         
-                    values = [v.strip() for v in line.strip().split(',')]
-                    if len(values) != len(headers):
-                        logger.warning(f"Skipping malformed line: {line}")
+                    # 只处理成功的支出交易
+                    if status not in ['交易成功', '还款成功', '已付款']:
                         continue
                         
-                    record = dict(zip(headers, values))
-                    
-                    # 验证必要字段
-                    if not all(key in record for key in ['交易时间', '商品说明', '金额', '收/支', '交易状态']):
-                        logger.warning(f"Skipping record with missing required fields: {record}")
+                    if transaction_type not in ['支出']:
                         continue
                     
-                    # 处理金额
-                    try:
-                        amount = float(record['金额'])
-                        if record['收/支'] == '支出':
-                            amount = -amount
-                        record['金额'] = amount
-                    except ValueError:
-                        logger.warning(f"Invalid amount format: {record['金额']}")
+                    # 解析时间
+                    parsed_time = _parse_datetime(transaction_time)
+                    if not parsed_time:
+                        continue
+                        
+                    # 解析金额
+                    amount = _clean_amount(amount_str)
+                    if amount <= 0:
                         continue
                     
-                    # 处理时间
-                    try:
-                        record['交易时间'] = datetime.strptime(record['交易时间'], '%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        logger.warning(f"Invalid date format: {record['交易时间']}")
-                        continue
+                    # 构建描述
+                    description_parts = []
+                    if merchant:
+                        description_parts.append(merchant)
+                    if product:
+                        description_parts.append(product)
+                    if note and note != '/':
+                        description_parts.append(note)
                     
-                    # 转换为标准格式
-                    expense = {
-                        'date': record['交易时间'],
-                        'amount': record['金额'],
-                        'category': record['商品说明'],
-                        'description': record['商品说明'],
-                        'channel': 'Alipay'
+                    description = ' - '.join(description_parts) if description_parts else '支付宝支付'
+                    
+                    record = {
+                        'transaction_time': parsed_time,
+                        'amount': -amount,  # 支出为负数
+                        'currency': 'CNY',
+                        'channel': 'Alipay',
+                        'source_raw_description': description,
+                        'description_for_ai': description,
+                        'external_transaction_id': transaction_id,
+                        'external_merchant_id': merchant_id,
+                        'source_provided_category': category,
+                        'source_payment_method': payment_method,
+                        'source_transaction_status': status
                     }
-                    records.append(expense)
-                
-                logger.info(f"Successfully parsed {len(records)} records from Alipay CSV")
-                return records
+                    
+                    records.append(record)
+                    
+                except Exception as e:
+                    logger.warning(f"Error parsing Alipay line {line_num}: {str(e)}")
+                    continue
+            
+            logger.info(f"Successfully parsed {len(records)} records from Alipay CSV")
+            return records
                 
         except UnicodeDecodeError:
             logger.warning(f"UnicodeDecodeError with {encoding} for file: {file_path}. Trying next encoding.")
             continue
         except Exception as e:
-            logger.error(f"Error parsing Alipay CSV: {e}")
-            return []
-    
-    logger.error(f"Failed to parse Alipay CSV with any encoding")
+            logger.error(f"Error parsing Alipay CSV file {file_path} with {encoding}: {e}")
+            continue
+
+    logger.error(f"Could not parse Alipay CSV file {file_path} with any encoding.")
     return []
 
 if __name__ == '__main__':

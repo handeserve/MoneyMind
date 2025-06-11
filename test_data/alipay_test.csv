@@ -1,0 +1,17 @@
+支付宝交易记录明细查询
+起始日期：2024-01-01 00:00:00    终止日期：2024-01-15 23:59:59
+------------------------------------交易记录明细列表------------------------------------
+ 交易时间 , 交易分类 , 交易对方 , 对方账号 , 商品说明 , 收/支 , 金额 , 收/付款方式 , 交易状态 , 交易订单号 , 商家订单号 , 备注 
+2024-01-01 10:20:30,数码产品,网络商城,user@example.com,智能手表,支出,1299.00,花呗,交易成功,ALITX123456,ALIMCHT654321,新年礼物
+2024-01-02 15:00:00,餐饮美食,快餐店,shop@example.com,套餐A,收入,35.00,余额宝,交易成功,ALITXINCOME01,ALIMCHTINCOME01,误操作退款
+2024-01-03 20:05:00,服饰装扮,品牌服装店,cloth@example.com,冬季外套,支出,599.50,银行卡(招商银行),交易成功,ALITXABCDEF,ALIMCHTUVWXYZ,
+2024-01-04 08:15:45,交通出行,地铁,metro@example.com,地铁票,支出,4.00,支付宝余额,交易成功,ALITXMETRO01,ALIMCHTMETRO02,上班
+2024-01-05 17:30:00,生活日用,超市,supermarket@example.com,食品和饮料,支出,120.80,信用卡(建设银行),已关闭,ALITXCLOSED01,ALIMCHTCLOSED01,订单取消
+2024-01-06 22:00:10,转账收款,朋友C,friend_c@example.com,转账,不计收支,100.00,支付宝,转账成功,ALITXTRANSFER01,ALIMCHTTRANSFER02,还款
+2024-01-07 13:40:00,充值提现,某游戏,game@example.com,游戏点券,支出,50.00,余额宝,交易成功,ALITXGAME001,ALIMCHTGAME002,
+ , , , , , , , , , , , 
+2024-01-08 19:00:00,餐饮美食,特色餐厅,restaurant@example.com,晚餐聚会,支出,350.00,花呗分期,交易成功,ALITXDINE001,ALIMCHTDINE002,朋友生日
+2024-01-09 10:00:00,生活日用,便利店,store@example.com,零食,支出, ,支付宝余额,交易成功,ALITXEMPTYAMT,ALIMCHTEMPTYAMT,
+INVALID DATE,生活日用,便利店,store@example.com,饮料,支出,5.00,支付宝余额,交易成功,ALITXINVALIDDATE,ALIMCHTINVALIDDATE,
+--------------------------------------支付宝业务咨询专线：95188--------------------------------------
+总交易笔数：XX,收入总金额：XX,支出总金额：XX

@@ -12,16 +12,27 @@ from .csv_parser import parse_wechat_csv, parse_alipay_csv
 # Configure basic logging
 logger = logging.getLogger(__name__) # Use module-level logger for consistency
 
-@dataclass
 class ImportSummary:
-    """导入操作的摘要信息"""
-    total_records: int
-    imported_records: int
-    skipped_records: int
-    failed_records: int
-    channel: str
-    file_name: str
-    import_time: str
+    def __init__(self):
+        self.total = 0
+        self.imported = 0
+        self.skipped = 0
+        self.failed = 0
+        self.channel = None
+        self.file_name = None
+        self.import_time = None
+    
+    def __str__(self):
+        return (
+            f"Import Summary:\n"
+            f"Total Records: {self.total}\n"
+            f"Imported: {self.imported}\n"
+            f"Skipped: {self.skipped}\n"
+            f"Failed: {self.failed}\n"
+            f"Channel: {self.channel}\n"
+            f"File: {self.file_name}\n"
+            f"Import Time: {self.import_time}"
+        )
 
 def _generate_cleaned_description(source_raw_description: str, channel: str) -> str:
     """
@@ -172,105 +183,189 @@ def _insert_expense(cursor, parsed_record, channel, current_time_iso):
         return False
 
 
-def _record_import_source(db_connection, record, channel):
+def _record_import_source(db: sqlite3.Connection, channel: str, file_path: str) -> int:
     """
-    记录导入来源信息到 import_records 表。
-    """
-    try:
-        cursor = db_connection.cursor()
-        cursor.execute("""
-            INSERT INTO import_records (
-                file_name, channel, import_time,
-                total_records, imported_records,
-                skipped_records, failed_records
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            record.get('file_name', ''),
-            channel,
-            record.get('import_time', datetime.now(timezone.utc).isoformat()),
-            record.get('total_records', 0),
-            record.get('imported_records', 0),
-            record.get('skipped_records', 0),
-            record.get('failed_records', 0)
-        ))
-        db_connection.commit()
-    except Exception as e:
-        logger.error(f"Error recording import source: {e}")
-
-
-def import_data(db_connection, file_path: str, channel: str) -> ImportSummary:
-    """
-    Imports data from a CSV file into the database.
+    记录导入来源信息到 import_sources 表。
     
     Args:
-        db_connection: Database connection
-        file_path (str): Path to the CSV file
-        channel (str): Channel name (e.g., 'Alipay', 'WeChat')
-        
-    Returns:
-        ImportSummary: Summary of the import operation
-    """
-    current_time = datetime.now(timezone.utc)
-    current_time_iso = current_time.isoformat()
+        db: 数据库连接
+        channel: 数据来源渠道
+        file_path: 导入文件路径
     
-    # 初始化导入统计
-    summary = ImportSummary(
-        total_records=0,
-        imported_records=0,
-        skipped_records=0,
-        failed_records=0,
-        channel=channel,
-        file_name=os.path.basename(file_path),
-        import_time=current_time_iso
-    )
+    Returns:
+        int: 导入记录ID
+    """
+    try:
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT INTO import_sources (
+                file_name,
+                source_channel,
+                import_timestamp,
+                records_imported,
+                status
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            os.path.basename(file_path),
+            channel,
+            datetime.now(timezone.utc).isoformat(),
+            0,  # 初始值，后续更新
+            'In Progress'
+        ))
+        db.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        logger.error(f"Error recording import source: {str(e)}")
+        raise
+
+
+def import_data(file_path: str, channel: str, db: sqlite3.Connection) -> ImportSummary:
+    """
+    导入数据到数据库
+    
+    Args:
+        file_path: CSV文件路径
+        channel: 数据来源渠道（'alipay', 'wechat', 'Alipay', 'WeChat'）
+        db: 数据库连接对象
+    
+    Returns:
+        ImportSummary: 导入结果摘要
+    """
+    logger.info(f"Starting import from {file_path} for channel {channel}")
+    
+    # 统一渠道名称映射
+    channel_mapping = {
+        'alipay': 'alipay',
+        'wechat': 'wechat',
+        'Alipay': 'alipay',
+        'WeChat': 'wechat'
+    }
+    
+    normalized_channel = channel_mapping.get(channel)
+    if not normalized_channel:
+        raise ValueError(f"Unsupported channel: {channel}")
+    
+    summary = ImportSummary()
+    summary.channel = normalized_channel
+    summary.file_name = os.path.basename(file_path)
+    summary.import_time = datetime.now(timezone.utc).isoformat()
     
     try:
-        # 根据渠道选择解析函数
-        if channel == 'Alipay':
+        # 解析CSV文件
+        if normalized_channel == 'alipay':
             records = parse_alipay_csv(file_path)
-        elif channel == 'WeChat':
+        else:  # wechat
             records = parse_wechat_csv(file_path)
-        else:
-            logger.error(f"Unsupported channel: {channel}")
-            return summary
         
         if not records:
-            logger.info(f"No processable records returned by parser for {file_path} (Channel: {channel}).")
+            logger.warning(f"No records found in {file_path}")
             return summary
         
-        summary.total_records = len(records)
+        summary.total = len(records)
         
-        # 开始导入数据
-        with db_connection as conn:
-            cursor = conn.cursor()
-            for record in records:
-                try:
-                    # 检查重复
-                    if _check_duplicate(cursor, record, channel):
-                        summary.skipped_records += 1
-                        continue
-                    
-                    # 插入记录
-                    result = _insert_expense(cursor, record, channel, current_time_iso)
-                    if result is True:
-                        summary.imported_records += 1
-                        # 记录导入来源
-                        _record_import_source(conn, record, channel)
-                    elif result == "duplicate_external_id":
-                        summary.skipped_records += 1
-                    else:
-                        summary.failed_records += 1
-                except Exception as e:
-                    logger.error(f"Error processing record: {e}")
-                    summary.failed_records += 1
-            
-            conn.commit()
+        # 记录导入来源
+        import_id = _record_import_source(db, normalized_channel, file_path)
         
+        # 导入数据
+        for record in records:
+            try:
+                result = _insert_expense(db.cursor(), record, normalized_channel, summary.import_time)
+                if result == True:
+                    summary.imported += 1
+                elif result == "duplicate_external_id":
+                    summary.skipped += 1
+                else:
+                    summary.failed += 1
+            except Exception as e:
+                logger.error(f"Error importing record: {str(e)}")
+                summary.failed += 1
+        
+        # 提交所有更改
+        db.commit()
+        
+        logger.info(f"Import completed: {summary.imported} records imported, {summary.skipped} skipped, {summary.failed} failed")
         return summary
-    
+        
     except Exception as e:
-        logger.error(f"Error during CSV import: {e}")
-        return summary
+        logger.error(f"Error during import: {str(e)}")
+        raise
+
+
+def _import_alipay_record(db: sqlite3.Connection, record: dict, import_id: int) -> None:
+    """
+    导入单条支付宝记录
+    
+    Args:
+        db: 数据库连接
+        record: 记录数据
+        import_id: 导入记录ID
+    """
+    cursor = db.cursor()
+    
+    # 检查是否已存在相同的外部ID
+    cursor.execute("SELECT id FROM expenses WHERE external_id = ?", (record['external_id'],))
+    if cursor.fetchone():
+        return
+    
+    # 插入新记录
+    cursor.execute("""
+        INSERT INTO expenses (
+            transaction_time,
+            amount,
+            description,
+            category,
+            channel,
+            external_id,
+            import_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        record['transaction_time'],
+        record['amount'],
+        record['description'],
+        record['category'],
+        'Alipay',
+        record['external_id'],
+        import_id
+    ))
+    db.commit()
+
+def _import_wechat_record(db: sqlite3.Connection, record: dict, import_id: int) -> None:
+    """
+    导入单条微信记录
+    
+    Args:
+        db: 数据库连接
+        record: 记录数据
+        import_id: 导入记录ID
+    """
+    cursor = db.cursor()
+    
+    # 检查是否已存在相同的外部ID
+    cursor.execute("SELECT id FROM expenses WHERE external_id = ?", (record['external_id'],))
+    if cursor.fetchone():
+        return
+    
+    # 插入新记录
+    cursor.execute("""
+        INSERT INTO expenses (
+            transaction_time,
+            amount,
+            description,
+            category,
+            channel,
+            external_id,
+            import_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        record['transaction_time'],
+        record['amount'],
+        record['description'],
+        record['category'],
+        'WeChat',
+        record['external_id'],
+        import_id
+    ))
+    db.commit()
 
 
 if __name__ == '__main__':
@@ -317,11 +412,11 @@ if __name__ == '__main__':
     alipay_test_records = [
         [' ' + h + ' ' for h in ALIPAY_HEADERS], # Simulate Alipay's spaced headers
         ["2024-07-01 10:20:30", "数码产品", "网络商城", "user@example.com", "智能手表", "支出", "1299.00", "花呗", "交易成功", "ALITX_CLEAN_001", "ALIMCHT_CLEAN_001", "新年礼物"],
-        ["2024-07-02 14:00:00", "餐饮美食", "支付宝-肯德基宅急送", "外卖", "支出", "¥58.50", "余额宝", "交易成功", "ALITX_CLEAN_002", "ALIMCHT_CLEAN_002", "午餐"],
-        ["2024-07-03 16:30:00", "生活缴费", "花呗扣款-中国移动", "手机充值", "支出", "¥100.00", "花呗", "交易成功", "ALITX_CLEAN_003", "ALIMCHT_CLEAN_003", ""],
-        ["2024-07-04 19:00:00", "购物", "消费-UNIQLO（南京路店）", "T恤", "支出", "¥99.00", "银行卡(招行)", "交易成功", "ALITX_CLEAN_004", "ALIMCHT_CLEAN_004", "夏季促销"]
+        ["2024-07-02 14:00:00", "餐饮美食", "支付宝-肯德基宅急送", "外卖", "支出", "58.50", "余额宝", "交易成功", "ALITX_CLEAN_002", "ALIMCHT_CLEAN_002", "午餐"],
+        ["2024-07-03 16:30:00", "生活缴费", "花呗扣款-中国移动", "手机充值", "支出", "100.00", "花呗", "交易成功", "ALITX_CLEAN_003", "ALIMCHT_CLEAN_003", ""],
+        ["2024-07-04 19:00:00", "购物", "消费-UNIQLO（南京路店）", "T恤", "支出", "99.00", "银行卡(招行)", "交易成功", "ALITX_CLEAN_004", "ALIMCHT_CLEAN_004", "夏季促销"]
     ]
-    with open(alipay_test_file_main, 'w', newline='', encoding='gbk') as f:
+    with open(alipay_test_file_main, 'w', newline='', encoding='utf-8') as f:
         f.write("支付宝交易记录明细查询\n------------------------------------交易记录明细列表------------------------------------\n")
         csv.writer(f).writerows(alipay_test_records)
         f.write("--------------------------------------支付宝业务咨询专线：95188--------------------------------------\n")
@@ -333,21 +428,21 @@ if __name__ == '__main__':
     test_ids_to_check = []
 
     logger.info("\n--- Data Importer Test: Testing WeChat Import with Cleaning ---")
-    wechat_result = import_data(conn, wechat_test_file_main, "WeChat")
+    wechat_result = import_data(wechat_test_file_main, "WeChat", conn)
     logger.info(f"WeChat Import Result: {wechat_result}")
-    if wechat_result['imported_records'] > 0:
+    if wechat_result.imported > 0:
         # Fetch last N imported records for verification (assuming IDs are sequential)
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM expenses WHERE channel='WeChat' ORDER BY id DESC LIMIT ?", (wechat_result['imported_records'],))
+        cursor.execute("SELECT id FROM expenses WHERE channel='WeChat' ORDER BY id DESC LIMIT ?", (wechat_result.imported,))
         test_ids_to_check.extend([row[0] for row in cursor.fetchall()])
 
 
     logger.info("\n--- Data Importer Test: Testing Alipay Import with Cleaning ---")
-    alipay_result = import_data(conn, alipay_test_file_main, "Alipay")
+    alipay_result = import_data(alipay_test_file_main, "Alipay", conn)
     logger.info(f"Alipay Import Result: {alipay_result}")
-    if alipay_result['imported_records'] > 0:
+    if alipay_result.imported > 0:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM expenses WHERE channel='Alipay' ORDER BY id DESC LIMIT ?", (alipay_result['imported_records'],))
+        cursor.execute("SELECT id FROM expenses WHERE channel='Alipay' ORDER BY id DESC LIMIT ?", (alipay_result.imported,))
         test_ids_to_check.extend([row[0] for row in cursor.fetchall()])
     
     logger.info("\n--- Data Importer Test: Verifying Cleaned Descriptions ---")

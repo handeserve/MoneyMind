@@ -14,6 +14,10 @@ from presentation_layer.dependencies import get_db
 from database import database as db_ops
 from ai_layer.expense_classifier import classify_single_expense
 
+# --- Logger Setup ---
+logger = logging.getLogger(__name__)
+
+# --- Router Definition ---
 router = APIRouter()
 
 # --- Pydantic Models ---
@@ -22,6 +26,9 @@ class ExpenseUpdateByUser(BaseModel):
     category_l2: Optional[str] = Field(None, description="User-confirmed or assigned L2 category.")
     notes: Optional[str] = Field(None, description="Optional notes for the expense.")
     is_hidden: Optional[bool] = Field(None, description="Optional flag to hide the expense.")
+
+class BatchDeleteRequest(BaseModel):
+    ids: List[int]
 
 class ExpenseResponse(BaseModel): # Example, can be more detailed based on db_ops.EXPENSE_COLUMNS
     id: int
@@ -77,20 +84,24 @@ async def list_expenses(
     if end_date is not None: filters_dict['end_date'] = end_date
     if is_hidden is not None: filters_dict['is_hidden'] = 1 if is_hidden else 0
     if is_confirmed_by_user is not None: filters_dict['is_confirmed_by_user'] = 1 if is_confirmed_by_user else 0
-    if category_l1 is not None: filters_dict['category_l1'] = category_l1
+    if category_l1 is not None:
+        if category_l1 == 'is_null':
+            filters_dict['category_l1_is_null'] = True
+        else:
+            filters_dict['category_l1'] = category_l1
     try:
         with sqlite3.connect(db_ops.DATABASE_PATH) as db:
             db.row_factory = sqlite3.Row
-            result = db_ops.get_expenses(
-                db_connection=db,
-                page=page,
-                per_page=per_page,
-                sort_by=sort_by,
-                sort_order=sort_order.upper(),
-                filters=filters_dict
-            )
+        result = db_ops.get_expenses(
+            db_connection=db,
+            page=page,
+            per_page=per_page,
+            sort_by=sort_by,
+            sort_order=sort_order.upper(),
+            filters=filters_dict
+        )
         return {
-            "expenses": result['expenses'],
+            "expenses": result['expenses'], 
             "total_count": result['total_count'],
             "page": page,
             "per_page": per_page
@@ -100,41 +111,40 @@ async def list_expenses(
         raise HTTPException(status_code=500, detail="Internal server error while fetching expenses.")
 
 @router.post("/{expense_id}/classify", response_model=ExpenseResponse)
-async def trigger_ai_classification(
+async def classify_expense_endpoint(
     expense_id: int = Path(..., ge=1, description="The ID of the expense to classify."),
 ):
+    """Triggers AI classification for a specified expense."""
     try:
         with sqlite3.connect(db_ops.DATABASE_PATH) as db:
             db.row_factory = sqlite3.Row
-            expense = db_ops.get_expense_by_id(db, expense_id)
-            if not expense:
-                raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found.")
-            if expense.get('is_confirmed_by_user') == 1:
-                raise HTTPException(status_code=400, detail=f"Expense ID {expense_id} is already confirmed by user. Cannot re-classify with AI.")
-            success = classify_single_expense(db_conn=db, expense_id=expense_id)
-            if success:
-                updated_expense = db_ops.get_expense_by_id(db, expense_id)
-                if updated_expense:
-                    return updated_expense
-                else:
-                    logging.error(f"AI Classification reported success for {expense_id}, but failed to retrieve updated record.")
-                    raise HTTPException(status_code=500, detail="Classification successful, but failed to retrieve updated record.")
+            
+            # The classification function now returns the full updated expense object
+            updated_expense = classify_single_expense(db, expense_id)
+
+            if updated_expense:
+                return updated_expense
             else:
-                if not db_ops.get_expense_by_id(db, expense_id):
+                # Check if it was not found vs. other failure
+                existing_expense = db_ops.get_expense_by_id(db, expense_id)
+                if not existing_expense:
                     raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found.")
-                raise HTTPException(status_code=500, detail="AI classification failed. Check server logs.")
+                
+                logger.error(f"Classification failed for expense {expense_id} for an unknown reason.")
+                raise HTTPException(status_code=500, detail=f"AI classification failed for expense {expense_id}.")
+    
     except HTTPException:
-        raise
+        raise # Re-raise FastAPI's own exceptions
     except Exception as e:
-        logging.error(f"Error during AI classification for expense {expense_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during AI classification for expense {expense_id}.")
+        logging.error(f"Error classifying expense {expense_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while classifying expense {expense_id}.")
 
 @router.put("/{expense_id}", response_model=ExpenseResponse)
 async def update_expense_by_user(
     expense_id: int = Path(..., ge=1, description="The ID of the expense to update."),
     data: ExpenseUpdateByUser = Body(...),
 ):
-    update_payload: Dict[str, Any] = data.model_dump(exclude_unset=True)
+    update_payload: Dict[str, Any] = data.model_dump(exclude_unset=True) 
     if not update_payload:
         raise HTTPException(status_code=400, detail="No update data provided.")
     if 'category_l1' in update_payload or 'category_l2' in update_payload:
@@ -144,21 +154,21 @@ async def update_expense_by_user(
     try:
         with sqlite3.connect(db_ops.DATABASE_PATH) as db:
             db.row_factory = sqlite3.Row
-            existing_expense = db_ops.get_expense_by_id(db, expense_id)
-            if not existing_expense:
-                raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found.")
-            success = db_ops.update_expense(db_connection=db, expense_id=expense_id, update_data=update_payload)
-            if success:
-                updated_expense = db_ops.get_expense_by_id(db, expense_id)
-                if updated_expense:
-                    return updated_expense
-                else:
-                    logging.error(f"Update for expense {expense_id} reported success, but failed to retrieve updated record.")
-                    raise HTTPException(status_code=500, detail="Update successful, but failed to retrieve updated record.")
+        existing_expense = db_ops.get_expense_by_id(db, expense_id)
+        if not existing_expense:
+            raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found.")
+        success = db_ops.update_expense(db_connection=db, expense_id=expense_id, update_data=update_payload)
+        if success:
+            updated_expense = db_ops.get_expense_by_id(db, expense_id)
+            if updated_expense:
+                return updated_expense
             else:
-                if not db_ops.get_expense_by_id(db, expense_id):
-                    raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found during update attempt.")
-                raise HTTPException(status_code=400, detail=f"Failed to update expense {expense_id}. It might be that no data was changed or an error occurred.")
+                logging.error(f"Update for expense {expense_id} reported success, but failed to retrieve updated record.")
+                raise HTTPException(status_code=500, detail="Update successful, but failed to retrieve updated record.")
+        else:
+            if not db_ops.get_expense_by_id(db, expense_id):
+                raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found during update attempt.")
+            raise HTTPException(status_code=400, detail=f"Failed to update expense {expense_id}. It might be that no data was changed or an error occurred.")
     except HTTPException:
         raise
     except Exception as e:
@@ -172,25 +182,118 @@ async def delete_single_expense(
     try:
         with sqlite3.connect(db_ops.DATABASE_PATH) as db:
             db.row_factory = sqlite3.Row
-            existing_expense = db_ops.get_expense_by_id(db, expense_id)
-            if not existing_expense:
-                raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found.")
-            success = db_ops.delete_expense(db_connection=db, expense_id=expense_id)
-            if success:
-                return {"message": f"Expense with ID {expense_id} successfully deleted."}
-            else:
-                if db_ops.get_expense_by_id(db, expense_id):
-                    raise HTTPException(status_code=500, detail=f"Failed to delete expense {expense_id}. An unknown error occurred.")
-                raise HTTPException(status_code=500, detail=f"Failed to delete expense {expense_id}. Check server logs.")
+        existing_expense = db_ops.get_expense_by_id(db, expense_id)
+        if not existing_expense:
+            raise HTTPException(status_code=404, detail=f"Expense with ID {expense_id} not found.")
+        success = db_ops.delete_expense(db_connection=db, expense_id=expense_id)
+        if success:
+            return {"message": f"Expense with ID {expense_id} successfully deleted."}
+        else:
+            if db_ops.get_expense_by_id(db, expense_id):
+                 raise HTTPException(status_code=500, detail=f"Failed to delete expense {expense_id}. An unknown error occurred.")
+            raise HTTPException(status_code=500, detail=f"Failed to delete expense {expense_id}. Check server logs.")
     except HTTPException:
         raise
     except Exception as e:
         logging.error(f"Error deleting expense {expense_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred while deleting expense {expense_id}.")
 
+@router.post("/batch/delete", response_model=Dict[str, str])
+async def batch_delete_expenses_endpoint(
+    request: BatchDeleteRequest = Body(...)
+):
+    """
+    Batch delete expenses by a list of IDs.
+    """
+    try:
+        with sqlite3.connect(db_ops.DATABASE_PATH) as db:
+            deleted_count = db_ops.batch_delete_expenses(db, request.ids)
+            return {"message": f"Successfully deleted {deleted_count} of {len(request.ids)} requested expenses."}
+    except Exception as e:
+        logging.error(f"Error in batch_delete_expenses endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during batch deletion.")
+
+@router.post("/batch/clear-categories", response_model=Dict[str, str])
+async def batch_clear_categories_endpoint(
+    request: BatchDeleteRequest = Body(...)
+):
+    """
+    Batch clear categories for a list of expense IDs.
+    """
+    try:
+        with sqlite3.connect(db_ops.DATABASE_PATH) as db:
+            updated_count = db_ops.batch_clear_categories(db, request.ids)
+            return {"message": f"Successfully cleared categories for {updated_count} of {len(request.ids)} requested expenses."}
+    except Exception as e:
+        logging.error(f"Error in batch_clear_categories endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during batch category clearing.")
+
+@router.post("/batch/clear-all-categories", response_model=Dict[str, str])
+async def batch_clear_all_categories_endpoint(
+    channel: Optional[str] = Query(None, description="Filter by channel"),
+    start_date: Optional[str] = Query(None, description="Filter by start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="Filter by end date (YYYY-MM-DD)"),
+    is_hidden: Optional[bool] = Query(None, description="Filter by hidden status"),
+    is_confirmed_by_user: Optional[bool] = Query(None, description="Filter by user confirmation status"),
+    category_l1: Optional[str] = Query(None, description="Filter by L1 category"),
+):
+    """
+    Clear categories for ALL expenses matching the given filters.
+    """
+    try:
+        filters_dict = {}
+        if channel is not None: filters_dict['channel'] = channel
+        if start_date is not None: filters_dict['start_date'] = start_date
+        if end_date is not None: filters_dict['end_date'] = end_date
+        if is_hidden is not None: filters_dict['is_hidden'] = 1 if is_hidden else 0
+        if is_confirmed_by_user is not None: filters_dict['is_confirmed_by_user'] = 1 if is_confirmed_by_user else 0
+        if category_l1 is not None:
+            if category_l1 == 'is_null':
+                filters_dict['category_l1_is_null'] = True
+            else:
+                filters_dict['category_l1'] = category_l1
+        
+        with sqlite3.connect(db_ops.DATABASE_PATH) as db:
+            updated_count = db_ops.batch_clear_all_categories(db, filters_dict)
+            return {"message": f"Successfully cleared categories for {updated_count} expenses matching the filters."}
+    except Exception as e:
+        logging.error(f"Error in batch_clear_all_categories endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during batch category clearing.")
+
+@router.post("/batch/delete-all", response_model=Dict[str, str])
+async def batch_delete_all_expenses_endpoint(
+    channel: Optional[str] = Query(None, description="Filter by channel"),
+    start_date: Optional[str] = Query(None, description="Filter by start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="Filter by end date (YYYY-MM-DD)"),
+    is_hidden: Optional[bool] = Query(None, description="Filter by hidden status"),
+    is_confirmed_by_user: Optional[bool] = Query(None, description="Filter by user confirmation status"),
+    category_l1: Optional[str] = Query(None, description="Filter by L1 category"),
+):
+    """
+    Delete ALL expenses matching the given filters.
+    """
+    try:
+        filters_dict = {}
+        if channel is not None: filters_dict['channel'] = channel
+        if start_date is not None: filters_dict['start_date'] = start_date
+        if end_date is not None: filters_dict['end_date'] = end_date
+        if is_hidden is not None: filters_dict['is_hidden'] = 1 if is_hidden else 0
+        if is_confirmed_by_user is not None: filters_dict['is_confirmed_by_user'] = 1 if is_confirmed_by_user else 0
+        if category_l1 is not None:
+            if category_l1 == 'is_null':
+                filters_dict['category_l1_is_null'] = True
+            else:
+                filters_dict['category_l1'] = category_l1
+        
+        with sqlite3.connect(db_ops.DATABASE_PATH) as db:
+            deleted_count = db_ops.batch_delete_all_expenses(db, filters_dict)
+            return {"message": f"Successfully deleted {deleted_count} expenses matching the filters."}
+    except Exception as e:
+        logging.error(f"Error in batch_delete_all_expenses endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during batch deletion.")
+
 # Basic logging setup if this module is run directly (for testing, not typical)
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
     logger.info("expenses_router.py loaded. This module is intended to be imported by main.py and run by Uvicorn.")
     logger.info(f"Valid expense columns for sorting/filtering: {db_ops.EXPENSE_COLUMNS}")

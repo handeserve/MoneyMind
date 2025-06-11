@@ -133,6 +133,34 @@ def get_expense_by_id(db_connection, expense_id):
         print(f"Error fetching expense by ID {expense_id}: {e}")
         return None
 
+def _build_where_clause(filters):
+    """Helper function to build WHERE clause and parameters from filters."""
+    where_clauses = []
+    params = []
+
+    if filters:
+        for key, value in filters.items():
+            if key == 'start_date':
+                # Ensure value is a valid date string, append time for full day coverage
+                where_clauses.append("transaction_time >= ?")
+                params.append(f"{value} 00:00:00")
+            elif key == 'end_date':
+                where_clauses.append("transaction_time <= ?")
+                params.append(f"{value} 23:59:59")
+            elif key == 'category_l1_is_null' and value:
+                where_clauses.append("(category_l1 IS NULL OR category_l1 = '')")
+            elif key in EXPENSE_COLUMNS: # Exact match for other valid columns
+                where_clauses.append(f"{key} = ?")
+                params.append(value)
+            else:
+                print(f"Warning: Invalid filter key '{key}'. Ignoring.")
+
+    where_query = ""
+    if where_clauses:
+        where_query = " WHERE " + " AND ".join(where_clauses)
+    
+    return where_query, params
+
 def get_expenses(db_connection, page=1, per_page=10, sort_by=None, sort_order='ASC', filters=None):
     """
     Fetches expenses with pagination, sorting, and filtering.
@@ -150,28 +178,9 @@ def get_expenses(db_connection, page=1, per_page=10, sort_by=None, sort_order='A
 
     offset = (page - 1) * per_page
     
-    where_clauses = []
-    params = []
-
-    if filters:
-        for key, value in filters.items():
-            if key == 'start_date':
-                # Ensure value is a valid date string, append time for full day coverage
-                where_clauses.append("transaction_time >= ?")
-                params.append(f"{value} 00:00:00")
-            elif key == 'end_date':
-                where_clauses.append("transaction_time <= ?")
-                params.append(f"{value} 23:59:59")
-            elif key in EXPENSE_COLUMNS: # Exact match for other valid columns
-                where_clauses.append(f"{key} = ?")
-                params.append(value)
-            else:
-                print(f"Warning: Invalid filter key '{key}'. Ignoring.")
-
+    # Use the helper function to build WHERE clause
+    where_query, params = _build_where_clause(filters)
     base_query = "FROM expenses"
-    where_query = ""
-    if where_clauses:
-        where_query = " WHERE " + " AND ".join(where_clauses)
 
     # Query for total count
     count_sql = f"SELECT COUNT(*) as total_count {base_query} {where_query}"
@@ -265,6 +274,87 @@ def delete_expense(db_connection, expense_id):
         print(f"Error deleting expense ID {expense_id}: {e}")
         return False
 
+def batch_delete_expenses(db_connection, expense_ids: list[int]):
+    """Deletes multiple expenses by a list of their IDs."""
+    if not expense_ids:
+        return 0
+    try:
+        with db_connection:
+            cursor = db_connection.cursor()
+            placeholders = ', '.join(['?'] * len(expense_ids))
+            sql = f"DELETE FROM expenses WHERE id IN ({placeholders})"
+            cursor.execute(sql, expense_ids)
+            return cursor.rowcount
+    except sqlite3.Error as e:
+        print(f"Error batch deleting expenses: {e}")
+        return 0
+
+def batch_clear_categories(db_connection, expense_ids: list[int]):
+    """Clears category information for multiple expenses."""
+    if not expense_ids:
+        return 0
+    try:
+        with db_connection:
+            cursor = db_connection.cursor()
+            placeholders = ', '.join(['?'] * len(expense_ids))
+            sql = f"""
+                UPDATE expenses 
+                SET 
+                    category_l1 = NULL, 
+                    category_l2 = NULL,
+                    is_classified_by_ai = 0,
+                    is_confirmed_by_user = 0,
+                    updated_at = ?
+                WHERE id IN ({placeholders})
+            """
+            params = [datetime.now(timezone.utc).isoformat()] + expense_ids
+            cursor.execute(sql, params)
+            return cursor.rowcount
+    except sqlite3.Error as e:
+        print(f"Error batch clearing categories: {e}")
+        return 0
+
+def batch_clear_all_categories(db_connection, filters=None):
+    """Clears category information for all expenses matching the given filters."""
+    try:
+        with db_connection:
+            cursor = db_connection.cursor()
+            
+            # Build WHERE clause from filters
+            where_clause, params = _build_where_clause(filters or {})
+            
+            sql = f"""
+                UPDATE expenses 
+                SET 
+                    category_l1 = NULL, 
+                    category_l2 = NULL,
+                    is_classified_by_ai = 0,
+                    is_confirmed_by_user = 0,
+                    updated_at = ?
+                {where_clause}
+            """
+            params = [datetime.now(timezone.utc).isoformat()] + params
+            cursor.execute(sql, params)
+            return cursor.rowcount
+    except sqlite3.Error as e:
+        print(f"Error batch clearing all categories: {e}")
+        return 0
+
+def batch_delete_all_expenses(db_connection, filters=None):
+    """Deletes all expenses matching the given filters."""
+    try:
+        with db_connection:
+            cursor = db_connection.cursor()
+            
+            # Build WHERE clause from filters
+            where_clause, params = _build_where_clause(filters or {})
+            
+            sql = f"DELETE FROM expenses {where_clause}"
+            cursor.execute(sql, params)
+            return cursor.rowcount
+    except sqlite3.Error as e:
+        print(f"Error batch deleting all expenses: {e}")
+        return 0
 
 if __name__ == '__main__':
     print(f"Initializing database at: {DATABASE_PATH}")

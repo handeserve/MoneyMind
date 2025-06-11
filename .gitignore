@@ -39,6 +39,14 @@ logs/
 *.sqlite3
 *.log
 
+# Build and distribution files
+build_dist/
+dist/
+build/
+*.spec
+*.zip
+MoneyMind-*
+
 # Environment variables
 .env
 .env.*
